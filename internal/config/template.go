@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"html"
 	"strings"
+
+	"github.com/haoyu010/ext.to/internal/media"
 )
 
 // DefaultTemplate is the caption used for new installs. It is rendered as
@@ -20,7 +22,7 @@ const DefaultTemplate = `<b>{title}</b>
 // TMDBTemplate is an optional caption preset that leads with the matched
 // TMDB entry. It is offered in the dashboard rather than applied by default,
 // because it only renders well once a TMDB key is configured.
-const TMDBTemplate = `<b>{tmdb_title}</b>{season_label} ({tmdb_year})
+const TMDBTemplate = `<b>{tmdb_title}</b>{season_label}{tmdb_year_paren}
 ⭐ {tmdb_rating}/10 · {tmdb_votes} votes
 
 📁 {category_tmdb}
@@ -47,6 +49,7 @@ var TemplateFields = []struct{ Key, Desc string }{
 	{"{category_tmdb}", "TMDB 分类规则命中的分类，例如 国漫、国产剧，未命中时为「未分类」"},
 	{"{season}", "季数，例如 6；发布名未写季数时为空。TMDB 的剧集条目含全部季，季数只来自发布名"},
 	{"{season_label}", "「 第 6 季」（含前导空格，便于直接接在标题后）；无季数时为空"},
+	{"{tmdb_year_paren}", "「(2016)」（含括号）；TMDB 无年份时为空，不会留下空括号"},
 	{"{episode}", "集数，例如 12；发布名未写集数时为空"},
 	{"{category}", "分类路径，例如 Movies - Highres Movies"},
 	{"{size}", "可读体积，例如 1.43 GB"},
@@ -147,9 +150,23 @@ func Render(tpl string, d TemplateData) string {
 	// after the title without leaving a gap when there is no season: the
 	// preset renders "<b>名称</b> 第 6 季 (2016)" and, for a film,
 	// "<b>名称</b> (2023)" rather than a double space or a stray separator.
+	//
+	// It is suppressed when the title already writes the season out, which is
+	// what the label is defined against: TMDB files some seasons as their own
+	// entry named after them ("毛骗 第二季" beside "毛骗"), so appending would
+	// render "毛骗 第二季 第 2 季". The season itself is still available as
+	// {season}, because a template may want the number on its own.
 	seasonLabel := ""
-	if season != "" {
+	if season != "" && !media.StatesSeason(tmdbTitle, d.Season) {
 		seasonLabel = " 第 " + season + " 季"
+	}
+	// The year is bracketed here rather than in the template so that a missing
+	// year leaves nothing at all. Some TMDB series entries carry an empty
+	// first_air_date ("毛骗 第二季 (2011)" does), and a template written as
+	// "({tmdb_year})" renders "()" for them.
+	yearParen := ""
+	if tmdbYear != "" {
+		yearParen = " (" + tmdbYear + ")"
 	}
 	rep := strings.NewReplacer(
 		"{title}", escape(d.Title),
@@ -165,6 +182,7 @@ func Render(tpl string, d TemplateData) string {
 		"{category_tmdb}", escape(ruleCategory),
 		"{season}", escape(season),
 		"{season_label}", escape(seasonLabel),
+		"{tmdb_year_paren}", escape(yearParen),
 		"{episode}", escape(episode),
 		"{category}", escape(d.Category),
 		"{size}", escape(d.Size),

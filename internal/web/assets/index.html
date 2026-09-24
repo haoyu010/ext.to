@@ -819,6 +819,8 @@
             季数与集数取自发布名（<span class="kbd">{season}</span>、<span class="kbd">{episode}</span>），
             不是取自 TMDB —— TMDB 的一部剧集条目覆盖全部季，只有发布名才写着是哪一季。
             不写季数的发布名、以及电影，这两个字段为空。
+            推荐用 <span class="kbd">{season_label}</span>，它渲染成「 第 6 季」（含前导空格），
+            无季数时为空，直接接在标题后即可；若标题本身已写出季数则也为空，避免重复。
           </p>
         </div>
 

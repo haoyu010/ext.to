@@ -1,6 +1,7 @@
 package config
 
 import (
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -28,37 +29,52 @@ func TestRenderTMDBFields(t *testing.T) {
 // from the release name rather than from TMDB: a TMDB series covers every
 // season in one entry, so the entry can only say which work the release is.
 //
-// The label carries its own leading space, so a template can put it straight
-// after the title: a film renders without a gap or a stray separator, which is
-// the case that a template written as "<b>{tmdb_title}</b> {season_label}"
-// would get wrong.
+// The shipped preset is rendered rather than a copy of it, because the cases
+// below are exactly the ones a hand-written copy would not exercise: the label
+// carries its own leading space and the year its own brackets, so a template
+// with either written literally renders "名称 第 0 季" or "()".
 func TestRenderSeasonLabel(t *testing.T) {
 	cases := []struct {
 		name string
 		data TemplateData
-		want string
+		head string
 	}{
 		{
 			name: "series with a stated season",
 			data: TemplateData{TMDBTitle: "一人之下", TMDBYear: 2016, TMDBID: 67063, TMDBType: "tv", Season: 6},
-			want: "<b>一人之下</b> 第 6 季 (2016)",
+			head: "<b>一人之下</b> 第 6 季 (2016)",
 		},
 		{
 			name: "film states no season",
 			data: TemplateData{TMDBTitle: "流浪地球2", TMDBYear: 2023, TMDBID: 842675, TMDBType: "movie"},
-			want: "<b>流浪地球2</b> (2023)",
+			head: "<b>流浪地球2</b> (2023)",
 		},
 		{
 			name: "series with no stated season",
 			data: TemplateData{TMDBTitle: "三体", TMDBYear: 2023, TMDBID: 204541, TMDBType: "tv"},
-			want: "<b>三体</b> (2023)",
+			head: "<b>三体</b> (2023)",
+		},
+		{
+			// TMDB files some seasons as their own entry named after them, so
+			// the title already says which season it is.
+			name: "title already names the season",
+			data: TemplateData{TMDBTitle: "毛骗 第二季 (2011)", TMDBID: 259602, TMDBType: "tv", Season: 2},
+			head: "<b>毛骗 第二季 (2011)</b>",
+		},
+		{
+			// Some entries carry no air date at all; the year must vanish
+			// rather than leave the brackets behind.
+			name: "entry has no year",
+			data: TemplateData{TMDBTitle: "某剧", TMDBID: 1, TMDBType: "tv", Season: 3},
+			head: "<b>某剧</b> 第 3 季",
 		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := Render(`<b>{tmdb_title}</b>{season_label} ({tmdb_year})`, tc.data)
-			if got != tc.want {
-				t.Errorf("Render =\n  %q\nwant\n  %q", got, tc.want)
+			got := Render(TMDBTemplate, tc.data)
+			first := strings.SplitN(got, "\n", 2)[0]
+			if first != tc.head {
+				t.Errorf("first line =\n  %q\nwant\n  %q", first, tc.head)
 			}
 		})
 	}
@@ -125,19 +141,27 @@ func TestHumanCount(t *testing.T) {
 	}
 }
 
-// The shipped TMDB template must only use placeholders the renderer knows.
+// The shipped templates must only use placeholders the renderer knows.
+//
+// The keys are read out of the templates rather than listed here, because a
+// list is a second place to forget: it was written before a placeholder was
+// added to the preset and stayed green, and the panel offers whatever
+// TemplateFields holds, so an unlisted key would be an undocumented one.
 func TestTMDBTemplatePlaceholdersAreAllSupported(t *testing.T) {
 	known := map[string]bool{}
 	for _, f := range TemplateFields {
 		known[f.Key] = true
 	}
-	for _, key := range []string{
-		"{tmdb_title}", "{tmdb_year}", "{tmdb_rating}", "{tmdb_votes}",
-		"{tmdb_url}", "{category}", "{size}", "{files}", "{seeds}",
-		"{leeches}", "{age}", "{url}",
-	} {
-		if !known[key] {
-			t.Errorf("TMDBTemplate uses %s but TemplateFields does not list it", key)
+	for name, tpl := range map[string]string{"DefaultTemplate": DefaultTemplate, "TMDBTemplate": TMDBTemplate} {
+		found := 0
+		for _, m := range rePlaceholder.FindAllString(tpl, -1) {
+			found++
+			if !known[m] {
+				t.Errorf("%s uses %s but TemplateFields does not list it", name, m)
+			}
+		}
+		if found == 0 {
+			t.Fatalf("%s yields no placeholders; the extraction is broken", name)
 		}
 	}
 	// Rendering it with a match must leave no placeholder behind.
@@ -145,11 +169,15 @@ func TestTMDBTemplatePlaceholdersAreAllSupported(t *testing.T) {
 		Title: "t", URL: "u", TMDBTitle: "匹配", TMDBYear: 2022,
 		TMDBRating: 7.1, TMDBVotes: 1000, TMDBURL: "tu", TMDBID: 5, TMDBType: "movie",
 	})
-	if strings.Contains(out, "{") && strings.Contains(out, "}") {
-		for _, f := range TemplateFields {
-			if strings.Contains(out, f.Key) {
-				t.Errorf("TMDBTemplate left %s unrendered", f.Key)
-			}
+	// Only the keys the renderer knows are looked for, because text the values
+	// themselves carry may contain braces.
+	for _, f := range TemplateFields {
+		if strings.Contains(out, f.Key) {
+			t.Errorf("TMDBTemplate left %s unrendered", f.Key)
 		}
 	}
 }
+
+// rePlaceholder matches a template placeholder. It is deliberately the same
+// shape the renderer substitutes: a brace pair with no braces inside.
+var rePlaceholder = regexp.MustCompile(`\{[a-z_]+\}`)

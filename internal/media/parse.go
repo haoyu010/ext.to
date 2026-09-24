@@ -742,6 +742,21 @@ func ChineseSeasonMarker(s string) (base, marker string) {
 	return base, strings.TrimSpace(m[2])
 }
 
+// StatesSeason reports whether a name already writes out the given season, so
+// that a caller appending the season does not repeat what the name says.
+//
+// TMDB files some seasons as their own entry whose name carries the season
+// ("毛骗 第二季" beside "毛骗"), and the release that named that season is
+// matched to it. The entry's own name is then the complete identification, and
+// a caption built as name plus season would say it twice.
+func StatesSeason(name string, season int) bool {
+	if season <= 0 {
+		return false
+	}
+	n, ok := chineseSeasonNumber(name)
+	return ok && n == season
+}
+
 // reChineseSeasonNumber captures just the digits of a Chinese season marker,
 // anywhere in the name rather than only at the end.
 var reChineseSeasonNumber = regexp.MustCompile(`第\s*([0-9０-９]{1,3}|[一二三四五六七八九十百]+)\s*[季部期]`)

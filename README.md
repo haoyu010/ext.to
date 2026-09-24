@@ -172,6 +172,11 @@ TMDB 把**一部剧集做成一条条目，覆盖它的全部季**。所以 `一
 
 拆开的季数还会用来**挑对续作**：TMDB 里有一类条目把季写进了正式名（`毛骗 第二季` 和 `毛骗` 是两条），
 搜基础名时两条都会返回，此时优先选名字里带该标记的那条。没有这个判断，`毛骗 第二季` 会被匹配到第一季。
+而匹配到这种「名字里带季」的条目时，`{season_label}` 会自动留空，否则会渲染成 `毛骗 第二季 第 2 季`。
+
+`{season_label}` 与 `{tmdb_year_paren}` 都自带前后缀（前导空格、外层括号），**直接相接即可**，不要自己再写空格或括号：
+它们在没有季数、没有年份时会渲染成空串。`毛骗 第二季 (2011)` 这类条目的 `first_air_date` 为空，
+写成 `({tmdb_year})` 会留下一个 `()`。
 
 候选会去重，且**只有前一个失败才会试下一个**，所以能直接命中的发布名不会多花请求。
 
@@ -189,9 +194,11 @@ TMDB 把**一部剧集做成一条条目，覆盖它的全部季**。所以 `一
 | `{tmdb_title}` | TMDB 匹配标题，未匹配时为种子标题 |
 | `{tmdb_original_title}` | TMDB 原始语言标题 |
 | `{tmdb_year}` `{tmdb_rating}` `{tmdb_votes}` | 年份、评分、评分人数 |
+| `{tmdb_year_paren}` | 渲染成 ` (2023)`（含前导空格与外层括号）；TMDB 无年份时为空，不会留下空括号 |
 | `{tmdb_url}` `{tmdb_id}` `{tmdb_type}` | TMDB 链接、编号、类型（movie / tv） |
 | `{tmdb_overview}` | TMDB 简介，按 Telegram 限制截断为 320 字 |
 | `{category_tmdb}` | 分类规则判定的分类，如 `国漫`、`国产剧`；未命中时为「未分类」，无规则时回退为站点分类 |
+| `{season}` `{season_label}` `{episode}` | 季数、季数标签、集数，取自发布名，见上文 |
 | `{category}` | 分类路径，如 `Movies - Highres Movies` |
 | `{size}` `{files}` | 体积、文件数 |
 | `{seeds}` `{leeches}` | 做种数、下载数 |
@@ -217,7 +224,7 @@ TMDB 把**一部剧集做成一条条目，覆盖它的全部季**。所以 `一
 TMDB 模板（面板里点 **TMDB 模板** 一键套用）：
 
 ```html
-<b>{tmdb_title}</b> ({tmdb_year})
+<b>{tmdb_title}</b>{season_label}{tmdb_year_paren}
 ⭐ {tmdb_rating}/10 · {tmdb_votes} votes
 
 📁 {category}
