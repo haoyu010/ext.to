@@ -15,6 +15,11 @@ env:
 jobs:
   test:
     runs-on: ubuntu-latest
+    # The image job reuses the version resolved here, so the tag and the
+    # compiled-in value can never disagree.
+    outputs:
+      version: ${{ steps.ver.outputs.version }}
+      minor: ${{ steps.ver.outputs.minor }}
     steps:
       - uses: actions/checkout@v4
 
@@ -22,6 +27,21 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
+
+      # VERSION is the single source of truth for the release number. Reading
+      # it here means the binary, the panel footer and the image tag all agree,
+      # instead of the panel reporting the branch name.
+      - name: Resolve version
+        id: ver
+        run: |
+          version=$(tr -d ' \t\r\n' < VERSION)
+          if ! printf '%s' "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "VERSION must be MAJOR.MINOR.PATCH, got: '$version'"
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "minor=${version%.*}" >> "$GITHUB_OUTPUT"
+          echo "resolved $version"
 
       - name: Verify formatting
         run: |
@@ -36,7 +56,15 @@ jobs:
         run: go vet ./...
 
       - name: Test
-        run: go test -race ./...
+        # The version is normally injected by the linker, so the test build has
+        # to supply it too; otherwise anything reading main.version would see
+        # the "dev" fallback and not what a release actually ships.
+        run: go test -race -ldflags "-X main.version=${{ steps.ver.outputs.version }}" ./...
+
+      - name: Check the panel reports this version
+        run: |
+          version=$(tr -d ' \t\r\n' < VERSION)
+          go run -ldflags "-X main.version=$version" ./cmd/server -version | grep -Fx "$version"
 
   image:
     needs: test
@@ -65,10 +93,11 @@ jobs:
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           tags: |
-            type=ref,event=branch
-            type=ref,event=pr
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
+            # VERSION drives the published tags, so pulling a specific release
+            # is possible and the running version is identifiable. latest keeps
+            # tracking the default branch for unattended redeploys.
+            type=raw,value=${{ needs.test.outputs.version }}
+            type=raw,value=${{ needs.test.outputs.minor }}
             type=raw,value=latest,enable={{is_default_branch}}
             type=sha,format=short
 
@@ -79,6 +108,6 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           build-args: |
-            VERSION=${{ github.ref_name }}
+            VERSION=${{ needs.test.outputs.version }}
           cache-from: type=gha
           cache-to: type=gha,mode=max

@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"flag"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
@@ -20,14 +21,26 @@ import (
 )
 
 // version is overridable at build time with -ldflags "-X main.version=...".
+//
+// The release number lives in the VERSION file, which the build reads and the
+// workflow passes in, so this default only appears in an uninstrumented
+// `go run`. It is deliberately "dev" rather than a plausible release number:
+// an unstamped binary must not look like something that was published.
 var version = "dev"
 
 func main() {
 	var (
 		addr    = flag.String("addr", envOr("ADDR", ":8080"), "HTTP listen address")
 		dataDir = flag.String("data", envOr("DATA_DIR", "/data"), "directory for settings and history")
+		// Printing the version lets the build verify that the linker actually
+		// stamped the binary, which a unit test cannot see.
+		showVersion = flag.Bool("version", false, "print the version and exit")
 	)
 	flag.Parse()
+	if *showVersion {
+		fmt.Println(version)
+		return
+	}
 
 	logger, ring := web.NewLogger(os.Stdout, version)
 	log.SetOutput(logger.Writer())

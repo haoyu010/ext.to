@@ -6,6 +6,9 @@
 # in YAML/Makefiles can break tooling.
 *.sh text eol=lf
 Dockerfile text eol=lf
+# VERSION is read verbatim by the Dockerfile and the workflow, both of which
+# strip whitespace; pinning it to LF keeps the value identical everywhere.
+VERSION text eol=lf
 *.yml text eol=lf
 *.yaml text eol=lf
 *.go text eol=lf

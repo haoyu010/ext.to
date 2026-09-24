@@ -11,12 +11,22 @@ WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
 
+COPY VERSION ./
 COPY cmd ./cmd
 COPY internal ./internal
 
-ARG VERSION=dev
+# The workflow passes the version it resolved; a plain `docker build` falls back
+# to reading the VERSION file. The resolution and the compile share one RUN
+# because a shell variable set in an earlier RUN does not survive into the next:
+# resolving it separately would silently build with an empty -X and the binary
+# would report the "dev" fallback instead of its real version.
+#
 # CGO is not needed; a static binary keeps the runtime image tiny.
-RUN CGO_ENABLED=0 GOOS=linux go build \
+ARG VERSION=""
+RUN VERSION="${VERSION:-$(tr -d ' \t\r\n' < VERSION)}"; \
+    test -n "$VERSION" || { echo "cannot determine a version"; exit 1; }; \
+    echo "building version $VERSION"; \
+    CGO_ENABLED=0 GOOS=linux go build \
       -trimpath \
       -ldflags "-s -w -X main.version=${VERSION}" \
       -o /out/extto ./cmd/server
