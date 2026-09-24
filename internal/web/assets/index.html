@@ -6,31 +6,40 @@
 <title>EXT 转发面板</title>
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📡</text></svg>">
 <style>
+  /* ============================================================
+     设计语言与 TG-Forwarder 面板保持一致：
+     violet 主色、浅色渐变背景、8px 圆角、44px 触控高度、
+     侧边栏永远显示图标 + 文字（不做纯图标窄条）。
+     ============================================================ */
   :root {
     color-scheme: light;
-    --bg: #f6f7f9;
-    --panel: #ffffff;
-    --panel-2: #fbfbfd;
-    --line: #e7e9ee;
-    --line-soft: #eef0f4;
-    --text: #1c1f26;
-    --muted: #6b7280;
-    --dim: #9aa1ad;
-    --accent: #5b5bd6;
-    --accent-soft: #eef0ff;
-    --accent-hover: #4d4dc4;
-    --ok: #128a5b;
-    --ok-soft: #e6f6ee;
-    --warn: #b4720a;
-    --warn-soft: #fdf3e2;
-    --err: #c2352f;
-    --err-soft: #fdeceb;
-    --info: #0b7fa8;
-    --info-soft: #e6f4f9;
-    --radius: 12px;
-    --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
-    --sans: "PingFang SC", "Microsoft YaHei", system-ui, -apple-system,
-            "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    --bg: #ffffff;
+    --surface: #f6f6fb;
+    --panel: #fdfdff;
+    --side: #f9faff;
+    --ink: #0f101d;
+    --muted: #515466;
+    --dim: #7b7f92;
+    --border: #d4d7e4;
+    /* 主色（violet）——按钮、选中导航、品牌图标 */
+    --accent: #4535c1;
+    --accent-hover: #3b27ae;
+    --accent-soft: #e8eafa;
+    --focus-ring: #8f94ff;
+    /* 语义色 */
+    --ok: #008745;
+    --warn: #d38400;
+    --err: #c92f36;
+    --info: #008dc6;
+    --ok-soft: #e3f5eb;
+    --warn-soft: #fdf1dc;
+    --err-soft: #fbe9ea;
+    --info-soft: #e0f3fa;
+    --neutral: #a8aeb9;
+    --radius: 8px;
+    --mono: "SFMono-Regular", ui-monospace, Consolas, "Liberation Mono", monospace;
+    --sans: Inter, "PingFang SC", "Microsoft YaHei", ui-sans-serif, system-ui,
+            -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   }
   * { box-sizing: border-box; }
   /* Author rules that set `display` (flex/grid) outrank the UA stylesheet's
@@ -40,246 +49,284 @@
   html, body { margin: 0; padding: 0; }
   body {
     background: var(--bg);
-    color: var(--text);
+    color: var(--ink);
     font: 14px/1.6 var(--sans);
     min-height: 100vh;
     -webkit-font-smoothing: antialiased;
   }
   a { color: var(--accent); text-decoration: none; }
   a:hover { text-decoration: underline; }
+  h1, h2, h3, p { margin: 0; }
+  button:focus-visible, input:focus-visible, select:focus-visible,
+  textarea:focus-visible, a:focus-visible {
+    outline: 3px solid var(--focus-ring);
+    outline-offset: 2px;
+  }
 
   /* ============================== 登录页 ============================== */
-  .login-wrap { min-height: 100vh; display: grid; place-items: center; padding: 22px; }
+  .login-wrap {
+    min-height: 100vh; display: grid; place-items: center; padding: 22px;
+    background: linear-gradient(135deg, var(--surface), var(--bg) 60%);
+  }
   .login {
-    width: 100%; max-width: 380px; background: var(--panel);
-    border: 1px solid var(--line); border-radius: 16px; padding: 28px 26px;
-    box-shadow: 0 20px 45px -30px #1b20301f;
+    width: 100%; max-width: 390px; background: var(--panel);
+    border: 1px solid var(--border); border-radius: var(--radius);
+    padding: 28px 26px; box-shadow: 0 18px 40px -28px #0f101d40;
   }
   .login .mark {
-    width: 48px; height: 48px; border-radius: 14px; margin: 0 auto 14px;
-    display: grid; place-items: center; font-size: 24px;
-    background: var(--accent-soft); color: var(--accent);
+    width: 40px; height: 40px; border-radius: var(--radius); margin: 0 auto 16px;
+    display: grid; place-items: center;
+    background: var(--accent); color: #fff;
   }
-  .login h2 { margin: 0 0 6px; text-align: center; font-size: 19px; }
-  .login p.s { margin: 0 0 22px; text-align: center; color: var(--muted); font-size: 13px; }
+  .login .mark svg { width: 20px; height: 20px; }
+  .login h2 { text-align: center; font-size: 20px; font-weight: 700; }
+  .login p.s { margin: 6px 0 24px; text-align: center; color: var(--muted); font-size: 13px; }
 
   /* ============================== 主结构 ============================== */
-  .shell { display: flex; min-height: 100vh; }
+  .shell {
+    min-height: 100vh; display: flex;
+    background: linear-gradient(90deg, var(--surface), var(--bg) 42%);
+  }
 
   aside.side {
-    width: 232px; flex: 0 0 232px; background: var(--panel);
-    border-right: 1px solid var(--line);
+    width: 260px; flex: 0 0 260px; background: var(--side);
+    border-right: 1px solid var(--border);
     display: flex; flex-direction: column;
-    position: sticky; top: 0; height: 100vh;
+    position: sticky; top: 0; height: 100vh; padding: 24px 18px 16px;
   }
   .side .brand {
-    display: flex; align-items: center; gap: 11px;
-    padding: 20px 18px 18px;
+    display: flex; align-items: center; gap: 12px; margin-bottom: 28px;
   }
   .side .brand .mark {
-    width: 38px; height: 38px; border-radius: 11px; flex: 0 0 auto;
-    display: grid; place-items: center; font-size: 19px;
-    background: var(--accent-soft); color: var(--accent);
+    width: 40px; height: 40px; border-radius: var(--radius); flex: 0 0 auto;
+    display: grid; place-items: center;
+    background: var(--accent); color: #fff;
   }
-  .side .brand h1 { margin: 0; font-size: 15.5px; font-weight: 650; letter-spacing: -0.1px; }
-  .side .brand p { margin: 1px 0 0; font-size: 12px; color: var(--dim); }
+  .side .brand .mark svg { width: 20px; height: 20px; }
+  .side .brand h1 { font-size: 15px; font-weight: 700; letter-spacing: -0.1px; }
+  .side .brand p { margin-top: 2px; font-size: 13px; color: var(--muted); }
 
-  nav.menu { padding: 4px 12px; flex: 1; overflow-y: auto; }
+  nav.menu { display: grid; gap: 6px; flex: 1; overflow-y: auto; align-content: start; }
   nav.menu button {
-    width: 100%; display: flex; align-items: center; gap: 10px;
-    appearance: none; border: 0; background: none; cursor: pointer;
-    padding: 9px 11px; margin-bottom: 2px; border-radius: 9px;
-    font: inherit; font-size: 13.5px; color: var(--muted); text-align: left;
-    transition: background .13s, color .13s;
+    width: 100%; min-height: 44px; display: flex; align-items: center; gap: 10px;
+    appearance: none; border: 0; background: transparent; cursor: pointer;
+    padding: 0 12px; border-radius: var(--radius);
+    font: inherit; font-size: 14px; color: var(--muted); text-align: left;
+    transition: background 160ms ease, color 160ms ease;
   }
-  nav.menu button svg { width: 17px; height: 17px; flex: 0 0 auto; stroke-width: 1.8; }
-  nav.menu button:hover { background: var(--line-soft); color: var(--text); }
-  nav.menu button.active { background: var(--accent-soft); color: var(--accent); font-weight: 600; }
+  nav.menu button svg { width: 18px; height: 18px; flex: 0 0 auto; stroke-width: 1.8; }
+  nav.menu button:hover, nav.menu button.active {
+    background: var(--accent-soft); color: var(--ink);
+  }
+  nav.menu button.active {
+    box-shadow: inset 3px 0 0 var(--accent); font-weight: 700;
+  }
   nav.menu .sect {
-    font-size: 11px; text-transform: uppercase; letter-spacing: .06em;
-    color: var(--dim); padding: 14px 11px 6px;
+    font-size: 12px; font-weight: 700; color: var(--dim);
+    padding: 14px 12px 4px;
   }
-  .side .foot { padding: 12px; border-top: 1px solid var(--line-soft); }
-  .side .foot .who { font-size: 12px; color: var(--dim); padding: 0 4px 8px; }
+  .side .foot { padding-top: 14px; border-top: 1px solid var(--border); }
+  .side .foot .who { font-size: 12.5px; color: var(--muted); padding: 0 2px 10px; }
 
-  main.body { flex: 1; min-width: 0; padding: 22px 26px 64px; }
-  .pagehead { display: flex; align-items: flex-start; gap: 14px; margin-bottom: 18px; }
-  .pagehead h2 { margin: 0; font-size: 20px; font-weight: 650; letter-spacing: -0.2px; }
-  .pagehead p { margin: 3px 0 0; color: var(--muted); font-size: 13px; }
+  main.body { flex: 1; min-width: 0; padding: 28px; display: grid; gap: 22px; align-content: start; }
+  .pagehead { display: flex; align-items: flex-start; gap: 18px; }
+  .pagehead h2 { font-size: 26px; line-height: 1.2; font-weight: 700; letter-spacing: -0.4px; }
+  .pagehead p { margin-top: 6px; color: var(--muted); font-size: 13.5px; max-width: 70ch; }
   .pagehead .grow { flex: 1; }
 
-  /* ============================== 卡片 ============================== */
-  .grid { display: grid; gap: 14px; }
-  .cols-5 { grid-template-columns: repeat(5, minmax(0, 1fr)); }
-  .cols-3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  /* ============================== 卡片 / 指标 ============================== */
+  .grid { display: grid; gap: 12px; }
+  .cols-5 { grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); }
+  .cols-3 { grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); }
   .cols-2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  @media (max-width: 1180px) { .cols-5 { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
-  @media (max-width: 1000px) {
-    aside.side { width: 76px; flex: 0 0 76px; }
-    .side .brand p, .side .brand h1, nav.menu button span, nav.menu .sect, .side .foot .who { display: none; }
-    .cols-3, .cols-2 { grid-template-columns: 1fr; }
-  }
-  @media (max-width: 760px) {
-    .cols-5 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-    main.body { padding: 16px 14px 48px; }
-  }
 
   .stat {
-    background: var(--panel); border: 1px solid var(--line);
+    background: var(--panel); border: 1px solid var(--border);
     border-radius: var(--radius); padding: 16px;
+    display: grid; gap: 10px; align-content: start;
   }
   .stat .ico {
-    width: 34px; height: 34px; border-radius: 9px; display: grid; place-items: center;
-    margin-bottom: 14px; color: #fff;
+    width: 38px; height: 38px; border-radius: var(--radius);
+    display: grid; place-items: center; color: #fff;
   }
-  .stat .ico svg { width: 18px; height: 18px; stroke-width: 2; }
-  .stat .ico.ok { background: #12a06a; }
-  .stat .ico.info { background: #1487b8; }
-  .stat .ico.warn { background: #d99413; }
-  .stat .ico.off { background: #a8aeb9; }
-  .stat .lbl { font-size: 12.5px; color: var(--muted); margin-bottom: 6px; }
-  .stat .val { font-size: 21px; font-weight: 650; letter-spacing: -0.3px; }
-  .stat .val.sm { font-size: 16px; }
-  .stat .sub { font-size: 12px; color: var(--dim); margin-top: 5px; }
+  .stat .ico svg { width: 19px; height: 19px; stroke-width: 2; }
+  .stat .ico.ok { background: var(--ok); }
+  .stat .ico.info { background: var(--info); }
+  .stat .ico.warn { background: var(--warn); }
+  .stat .ico.off { background: var(--neutral); }
+  .stat .lbl { font-size: 13px; color: var(--muted); }
+  .stat .val { font-size: 22px; font-weight: 700; letter-spacing: -0.3px; }
+  .stat .val.sm { font-size: 17px; }
+  .stat .sub { font-size: 12.5px; color: var(--dim); }
 
   .card {
-    background: var(--panel); border: 1px solid var(--line);
-    border-radius: var(--radius); padding: 18px; margin-bottom: 14px;
+    background: var(--panel); border: 1px solid var(--border);
+    border-radius: var(--radius); padding: 18px;
+    display: grid; gap: 16px; align-content: start;
   }
-  .card > h3 {
-    margin: 0 0 3px; font-size: 14.5px; font-weight: 650;
-  }
-  .card > p.hint { margin: 0 0 16px; color: var(--muted); font-size: 12.5px; }
-  .card .cardico { color: var(--accent); opacity: .85; }
-  .cardhead { display: flex; align-items: center; gap: 10px; margin-bottom: 3px; }
-  .cardhead h3 { margin: 0; font-size: 14.5px; font-weight: 650; }
+  .card > h3 { font-size: 17px; font-weight: 700; }
+  /* The card is a grid with a 16px gap, so a heading and its description would
+     read as two unrelated blocks. Pull the hint back up to sit under its title. */
+  .card > p.hint { color: var(--muted); font-size: 13.5px; margin-top: -10px; }
+  .card .cardico { color: var(--accent); opacity: .9; }
+  .cardhead { display: flex; align-items: center; gap: 12px; }
+  .cardhead h3 { font-size: 17px; font-weight: 700; }
   .cardhead .grow { flex: 1; }
 
   /* ============================== 表单 ============================== */
-  label.field { display: block; margin-bottom: 14px; }
-  label.field > span.lbl { display: block; margin-bottom: 6px; font-size: 12.5px; font-weight: 550; color: #3c4250; }
-  label.field > span.help { display: block; margin-top: 5px; font-size: 11.5px; color: var(--dim); }
+  label.field { display: grid; gap: 8px; }
+  label.field > span.lbl { font-size: 13px; font-weight: 700; color: var(--muted); }
+  label.field > span.help { font-size: 12px; color: var(--dim); }
   input[type=text], input[type=password], input[type=number], select, textarea {
-    width: 100%; padding: 9px 11px; font: inherit; font-size: 13.5px;
-    color: var(--text); background: var(--panel-2);
-    border: 1px solid var(--line); border-radius: 9px; outline: none;
-    transition: border-color .13s, box-shadow .13s;
+    width: 100%; min-height: 44px; padding: 11px 12px; font: inherit; font-size: 14px;
+    color: var(--ink); background: var(--bg);
+    border: 1px solid var(--border); border-radius: var(--radius); outline: none;
+    transition: border-color 160ms ease;
   }
-  input:focus, select:focus, textarea:focus {
-    border-color: var(--accent);
-    box-shadow: 0 0 0 3px #5b5bd61f;
-  }
-  textarea { resize: vertical; min-height: 132px; font-family: var(--mono); font-size: 12.5px; line-height: 1.65; }
-  select[multiple] { min-height: 148px; }
-  select[multiple] option { padding: 4px 7px; border-radius: 6px; }
-  .row { display: flex; gap: 14px; flex-wrap: wrap; }
-  .row > * { flex: 1 1 210px; min-width: 0; }
-  .check { display: flex; align-items: flex-start; gap: 9px; margin-bottom: 11px; cursor: pointer; }
+  input:focus, select:focus, textarea:focus { border-color: var(--accent); }
+  textarea { resize: vertical; min-height: 132px; font-family: var(--mono); font-size: 13px; line-height: 1.55; }
+  select[multiple] { min-height: 172px; padding: 6px; }
+  select[multiple] option { padding: 6px 8px; border-radius: 6px; }
+  .row { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 14px; align-items: start; }
+  .check { display: flex; align-items: flex-start; gap: 9px; cursor: pointer; }
   .check input { margin: 3px 0 0; width: 16px; height: 16px; accent-color: var(--accent); flex: 0 0 auto; }
-  .check .t { font-size: 13px; }
-  .check .t b { display: block; font-weight: 550; }
-  .check .t small { color: var(--dim); font-size: 11.5px; }
+  .check .t { font-size: 13.5px; }
+  .check .t b { display: block; font-weight: 700; }
+  .check .t small { color: var(--muted); font-size: 12.5px; }
 
   button.btn {
-    appearance: none; cursor: pointer; font: inherit; font-size: 13px; font-weight: 550;
-    padding: 8px 15px; border-radius: 9px; border: 1px solid var(--line);
-    background: var(--panel); color: var(--text);
-    display: inline-flex; align-items: center; gap: 7px;
-    transition: background .13s, border-color .13s, opacity .13s;
+    appearance: none; cursor: pointer; font: inherit; font-size: 14px; font-weight: 700;
+    min-height: 44px; padding: 0 14px; border-radius: var(--radius);
+    border: 1px solid var(--border); background: var(--panel); color: var(--ink);
+    display: inline-flex; align-items: center; justify-content: center; gap: 8px;
+    transition: background 160ms ease, border-color 160ms ease, opacity 160ms ease;
   }
-  button.btn svg { width: 15px; height: 15px; stroke-width: 2; }
-  button.btn:hover:not(:disabled) { background: var(--line-soft); }
-  button.btn:disabled { opacity: .5; cursor: not-allowed; }
-  button.btn.primary {
-    background: var(--accent); border-color: var(--accent); color: #fff;
-  }
+  button.btn svg { width: 17px; height: 17px; stroke-width: 2; }
+  button.btn:hover:not(:disabled) { background: var(--surface); }
+  button.btn:disabled { opacity: .55; cursor: not-allowed; }
+  button.btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
   button.btn.primary:hover:not(:disabled) { background: var(--accent-hover); border-color: var(--accent-hover); }
-  button.btn.danger { color: var(--err); border-color: #f0cfcd; }
+  button.btn.danger { color: var(--err); border-color: #f0c9c7; }
   button.btn.danger:hover:not(:disabled) { background: var(--err-soft); }
-  .actions { display: flex; gap: 9px; flex-wrap: wrap; align-items: center; }
+  .actions { display: flex; gap: 12px; flex-wrap: wrap; align-items: center; }
 
-  .chips { display: flex; gap: 6px; flex-wrap: wrap; margin: 8px 0 12px; }
+  .chips { display: flex; gap: 6px; flex-wrap: wrap; }
   .chip {
-    font-family: var(--mono); font-size: 11px; padding: 3px 8px;
-    background: var(--panel-2); border: 1px solid var(--line); border-radius: 6px;
+    font-family: var(--mono); font-size: 12px; padding: 5px 10px;
+    background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
     color: var(--muted); cursor: pointer;
   }
   .chip:hover { border-color: var(--accent); color: var(--accent); }
-  .kbd { font-family: var(--mono); font-size: 11.5px; background: var(--panel-2); border: 1px solid var(--line); border-radius: 5px; padding: 1px 6px; }
+  .kbd { font-family: var(--mono); font-size: 12px; background: var(--surface); border: 1px solid var(--border); border-radius: 4px; padding: 1px 6px; }
 
   /* ============================== 表格 ============================== */
   .tw { overflow-x: auto; }
-  table { width: 100%; border-collapse: collapse; font-size: 13px; }
-  th, td { text-align: left; padding: 10px 12px; border-bottom: 1px solid var(--line-soft); vertical-align: top; }
-  th { font-size: 11.5px; text-transform: uppercase; letter-spacing: .04em; color: var(--dim); font-weight: 600; white-space: nowrap; }
-  tbody tr:last-child td { border-bottom: 0; }
-  tbody tr:hover { background: var(--panel-2); }
+  table { width: 100%; border-collapse: collapse; }
+  th, td { text-align: left; padding: 13px 14px; border-top: 1px solid var(--border); vertical-align: top; }
+  th { color: var(--muted); font-size: 12px; font-weight: 700; white-space: nowrap; }
+  tbody tr:hover { background: var(--surface); }
   td.title { max-width: 430px; }
-  td.title a { color: var(--text); }
+  td.title a { color: var(--ink); font-weight: 700; }
   td.title a:hover { color: var(--accent); }
-  td .muted { color: var(--dim); font-size: 12px; }
+  td .muted { color: var(--muted); font-size: 12.5px; }
   .tag {
-    display: inline-block; font-size: 11px; font-weight: 600; padding: 2px 8px;
-    border-radius: 999px; white-space: nowrap;
+    display: inline-flex; align-items: center; min-height: 26px; font-size: 12.5px;
+    font-weight: 700; padding: 0 9px; border-radius: 999px; white-space: nowrap;
   }
   .tag.sent { background: var(--ok-soft); color: var(--ok); }
   .tag.pending { background: var(--warn-soft); color: var(--warn); }
   .tag.failed { background: var(--err-soft); color: var(--err); }
   .tag.movie { background: var(--info-soft); color: var(--info); }
   .tag.tv { background: var(--accent-soft); color: var(--accent); }
-  .empty { padding: 30px; text-align: center; color: var(--dim); font-size: 13px; }
+  .empty { padding: 30px; text-align: center; color: var(--muted); font-size: 13.5px; }
 
   .pill {
     display: inline-flex; align-items: center; gap: 7px;
-    padding: 5px 12px; border-radius: 999px; font-size: 12.5px;
-    background: var(--panel); border: 1px solid var(--line); color: var(--muted);
+    min-height: 32px; padding: 0 12px; border-radius: 999px; font-size: 13px;
+    background: var(--surface); border: 1px solid var(--border); color: var(--ink);
     white-space: nowrap;
   }
-  .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--dim); flex: 0 0 auto; }
-  .dot.on { background: #12a06a; box-shadow: 0 0 0 3px #12a06a26; }
-  .dot.off { background: #b7bcc6; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--dim); flex: 0 0 auto; }
+  .dot.on { background: var(--ok); }
+  .dot.off { background: var(--neutral); }
 
   .log {
-    background: #fbfbfd; border: 1px solid var(--line); border-radius: 10px;
-    padding: 13px 15px; font-family: var(--mono); font-size: 12px; line-height: 1.7;
+    background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
+    padding: 13px 15px; font-family: var(--mono); font-size: 13px; line-height: 1.7;
     max-height: 60vh; overflow: auto; white-space: pre-wrap; word-break: break-word;
-    color: #40485a;
+    color: var(--muted);
   }
   .log .t { color: var(--dim); }
-  .log .e { color: var(--err); }
+  .log .e { color: var(--err); font-weight: 700; }
 
   .warnbox {
-    background: var(--warn-soft); border: 1px solid #f2ddb4; color: #7d5308;
-    border-radius: 10px; padding: 11px 14px; font-size: 12.5px; margin-bottom: 14px;
+    background: var(--warn-soft); border: 1px solid #f0dcb0; color: #7a4d00;
+    border-radius: var(--radius); padding: 12px 14px; font-size: 13.5px;
   }
   .okbox {
-    background: var(--ok-soft); border: 1px solid #c3e7d5; color: #0d6b47;
-    border-radius: 10px; padding: 11px 14px; font-size: 12.5px; margin-bottom: 14px;
+    background: var(--ok-soft); border: 1px solid #bfe3d0; color: #0a5c34;
+    border-radius: var(--radius); padding: 12px 14px; font-size: 13.5px;
   }
-  .metricrow { display: flex; flex-wrap: wrap; gap: 26px; }
-  .metric .k { font-size: 12px; color: var(--muted); }
-  .metric .v { font-size: 17px; font-weight: 600; }
-  .muted-note { color: var(--dim); font-size: 12px; margin: 14px 0 0; }
+  .metricrow { display: flex; flex-wrap: wrap; gap: 28px; }
+  .metric .k { font-size: 12.5px; color: var(--muted); font-weight: 700; }
+  .metric .v { font-size: 18px; font-weight: 700; }
+  .muted-note { color: var(--muted); font-size: 12.5px; }
 
-  .toast-wrap { position: fixed; right: 20px; bottom: 20px; z-index: 100; display: flex; flex-direction: column; gap: 9px; max-width: min(430px, 92vw); }
+  .toast-wrap { position: fixed; right: 20px; bottom: 20px; z-index: 100; display: flex; flex-direction: column; gap: 10px; max-width: min(430px, 92vw); }
   .toast {
-    padding: 11px 14px; border-radius: 10px; font-size: 13px;
-    background: var(--panel); border: 1px solid var(--line);
-    box-shadow: 0 14px 32px -14px #1b203029; animation: slidein .2s ease; word-break: break-word;
+    padding: 12px 14px; border-radius: var(--radius); font-size: 13.5px;
+    background: var(--panel); border: 1px solid var(--border);
+    box-shadow: 0 14px 32px -16px #0f101d33; animation: slidein .2s ease; word-break: break-word;
   }
-  .toast.ok { border-color: #bfe3d2; }
+  .toast.ok { border-color: #bfe3d0; }
   .toast.err { border-color: #f0c9c7; }
-  .toast .ttl { font-weight: 600; margin-bottom: 2px; }
-  .toast .body { color: var(--muted); font-size: 12.5px; }
+  .toast .ttl { font-weight: 700; margin-bottom: 2px; }
+  .toast .body { color: var(--muted); font-size: 13px; }
   @keyframes slidein { from { opacity: 0; transform: translateX(16px); } }
 
-  .modal-back { position: fixed; inset: 0; background: #1b203055; backdrop-filter: blur(2px); display: none; place-items: center; z-index: 90; padding: 22px; }
+  .modal-back { position: fixed; inset: 0; background: #0f101d55; display: none; place-items: center; z-index: 90; padding: 22px; }
   .modal-back.show { display: grid; }
-  .modal { width: 100%; max-width: 660px; max-height: 86vh; overflow: auto; background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 22px; box-shadow: 0 24px 60px -24px #1b20304d; }
-  .modal h3 { margin: 0 0 14px; font-size: 16px; }
-  .cap { background: var(--panel-2); border: 1px solid var(--line); border-radius: 10px; padding: 13px; white-space: pre-wrap; word-break: break-word; font-size: 13px; line-height: 1.7; }
-  .inline-form { display: flex; gap: 9px; align-items: flex-end; flex-wrap: wrap; }
-  .inline-form > label.field { flex: 1 1 230px; margin-bottom: 0; }
+  .modal {
+    width: 100%; max-width: 660px; max-height: 86vh; overflow: auto;
+    background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius);
+    padding: 22px; box-shadow: 0 24px 60px -24px #0f101d4d;
+  }
+  .modal h3 { margin: 0 0 14px; font-size: 18px; font-weight: 700; }
+  .cap {
+    background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
+    padding: 13px; white-space: pre-wrap; word-break: break-word; font-size: 13.5px; line-height: 1.7;
+  }
+  .inline-form { display: flex; gap: 12px; align-items: flex-end; flex-wrap: wrap; }
+  .inline-form > label.field { flex: 1 1 230px; }
+
+  /* ============================== 自适应 ============================== */
+  /* 窄屏把侧边栏变成横向导航，而不是隐藏文字只留图标：
+     图标窄条既没有可读标签，也会把"退出登录"挤成逐字换行。 */
+  @media (max-width: 980px) {
+    .shell { display: block; }
+    aside.side {
+      width: auto; flex: none; position: static; height: auto;
+      border-right: 0; border-bottom: 1px solid var(--border); padding: 18px;
+    }
+    .side .brand { margin-bottom: 16px; }
+    nav.menu { display: flex; flex-wrap: wrap; }
+    nav.menu .sect { width: 100%; padding: 6px 0 0; }
+    .side .foot { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+    .side .foot .who { padding: 0; }
+    main.body { padding: 22px 18px 48px; }
+    .cols-2 { grid-template-columns: 1fr; }
+  }
+  @media (max-width: 640px) {
+    main.body { padding: 18px; gap: 16px; }
+    /* Keep the header as a wrapping flex row: as a grid the empty .grow spacer
+       becomes its own row and the status pill and refresh button stretch to
+       full width. */
+    .pagehead { flex-wrap: wrap; gap: 12px; }
+    .pagehead h2 { font-size: 22px; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    * { transition: none !important; animation: none !important; }
+  }
 </style>
 </head>
 <body>
@@ -287,7 +334,7 @@
 <!-- ============================== 登录 ============================== -->
 <div id="login" class="login-wrap" hidden>
   <form class="login" id="loginForm">
-    <div class="mark">📡</div>
+    <div class="mark"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 4 3 11l6 2 2 6 4-5 6-10z"/></svg></div>
     <h2>EXT 转发面板</h2>
     <p class="s">登录后管理 ext.to 抓取与 Telegram 推送</p>
     <label class="field">
@@ -307,7 +354,7 @@
 <div id="app" class="shell" hidden>
   <aside class="side">
     <div class="brand">
-      <div class="mark">📡</div>
+      <div class="mark"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 4 3 11l6 2 2 6 4-5 6-10z"/></svg></div>
       <div>
         <h1>EXT 转发面板</h1>
         <p id="brandSub">ext.to → Telegram</p>
@@ -370,7 +417,7 @@
 
       <div class="warnbox" id="cfWarn" hidden></div>
 
-      <div class="grid cols-5" style="margin-bottom:14px">
+      <div class="grid cols-5">
         <div class="stat">
           <div class="ico ok" id="icoMonitor"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v18M5 8l7-5 7 5"/></svg></div>
           <div class="lbl">监听服务</div>
@@ -418,7 +465,7 @@
       </div>
 
       <div class="grid cols-2">
-        <div class="card" style="margin-bottom:0">
+        <div class="card">
           <h3>最近一次扫描</h3>
           <p class="hint" id="lastScanLine">尚无扫描记录。</p>
           <div class="metricrow">
@@ -428,9 +475,9 @@
             <div class="metric"><div class="k">跳过</div><div class="v" id="lrSkipped">0</div></div>
             <div class="metric"><div class="k">失败</div><div class="v" id="lrFailed">0</div></div>
           </div>
-          <div class="warnbox" id="lrErr" hidden style="margin:14px 0 0"></div>
+          <div class="warnbox" id="lrErr" hidden></div>
         </div>
-        <div class="card" style="margin-bottom:0">
+        <div class="card">
           <div class="cardhead">
             <h3>最新动态</h3>
             <div class="grow"></div>
@@ -781,7 +828,7 @@
       </form>
       <div class="card">
         <h3>关于</h3>
-        <p class="hint" style="margin-bottom:10px">ext.to 抓取并转发到 Telegram 的自动化工具。</p>
+        <p class="hint">ext.to 抓取并转发到 Telegram 的自动化工具。</p>
         <div class="metricrow">
           <div class="metric"><div class="k">版本</div><div class="v" id="aboutVersion">—</div></div>
           <div class="metric"><div class="k">面板地址</div><div class="v" style="font-size:14px" id="aboutAddr">—</div></div>
@@ -795,7 +842,7 @@
 
 <div class="modal-back" id="modalBack">
   <div class="modal">
-    <div class="cardhead" style="margin-bottom:16px">
+    <div class="cardhead">
       <h3 id="modalTitle">详情</h3>
       <div class="grow"></div>
       <button class="btn" id="modalClose" type="button">关闭</button>
