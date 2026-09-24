@@ -23,6 +23,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 
 	"github.com/haoyu010/ext.to/internal/media"
 )
@@ -73,6 +74,14 @@ type Entry struct {
 	ProductionCountries []string `json:"production_countries,omitempty"`
 	// MatchedBy records how the entry was found: "imdb" or "title".
 	MatchedBy string `json:"matched_by"`
+	// Aliases are the alternative titles TMDB lists for the entry.
+	//
+	// They are what lets a release match the name a fansub group published
+	// rather than the entry's own name: the group writes "雪王来了" while TMDB
+	// stores "雪王驾到", and the two are the same work. Only an exact
+	// normalised equality is accepted against an alias, so this widens what
+	// can match without making the match fuzzy.
+	Aliases []string `json:"aliases,omitempty"`
 	// Confidence is 1.0 for an id match and below it for title matches.
 	Confidence float64 `json:"confidence"`
 }
@@ -249,9 +258,48 @@ type findResult struct {
 	ID int `json:"id"`
 }
 
-// byTitle searches TMDB by title and accepts only a normalised exact match.
-// The year and kind come from parsed, which is derived from the release name,
-// so a canonical title that differs does not change the search constraints.
+// searchResult is one entry from a /search response.
+type searchResult struct {
+	ID           int    `json:"id"`
+	Title        string `json:"title"`
+	Name         string `json:"name"`
+	OriginalName string `json:"original_name"`
+	OriginalTtl  string `json:"original_title"`
+	ReleaseDate  string `json:"release_date"`
+	FirstAirDate string `json:"first_air_date"`
+}
+
+// ownNames lists every name the search response itself exposes, which is the
+// set an exact match is tested against.
+func (r searchResult) ownNames() []string {
+	return []string{r.Title, r.Name, r.OriginalTitle(), r.OriginalTtl}
+}
+
+// OriginalTitle returns whichever original-name field this media type uses.
+func (r searchResult) OriginalTitle() string {
+	if r.OriginalName != "" {
+		return r.OriginalName
+	}
+	return r.OriginalTtl
+}
+
+// byTitle searches TMDB by title. The year and kind come from parsed, which is
+// derived from the release name, so a canonical title that differs does not
+// change the search constraints.
+//
+// A match is accepted in two passes, and the second only runs when the first
+// found nothing:
+//
+//  1. The entry's own name equals the query, normalised. This is the strong
+//     claim and is settled from the search response alone.
+//  2. The entry's alias equals the query. A fansub release publishes the name
+//     TMDB lists as an alias rather than as the entry title ("雪王来了" for the
+//     entry "雪王驾到", "Kimi ga Shinu made Koi wo Shitai" for "与你相恋到生命
+//     尽头"), and without this pass most Chinese animation never resolves.
+//
+// The alias pass costs a detail request per result, so it is limited to the
+// best few and an alias still has to equal the query exactly. That widens which
+// name can match without making the match fuzzy.
 //
 // The year is deliberately not sent as a query parameter. TMDB's year filters
 // are exact, and a torrent's year is not reliably the same field: for a series
@@ -267,66 +315,185 @@ func (c *Client) byTitle(ctx context.Context, title string, parsed media.Result)
 		kinds = []string{"tv"}
 	}
 
-	want := media.Normalize(title)
-	var best Entry
-	var bestDelta int
-	var bestScore float64
+	// The search is issued once per kind. The exact pass reuses the response
+	// rather than repeating the request, so the alias fallback stays cheap.
+	responses := map[string][]searchResult{}
 	for _, kind := range kinds {
 		var out struct {
-			Results []struct {
-				ID           int    `json:"id"`
-				Title        string `json:"title"`
-				Name         string `json:"name"`
-				OriginalName string `json:"original_name"`
-				OriginalTtl  string `json:"original_title"`
-				ReleaseDate  string `json:"release_date"`
-				FirstAirDate string `json:"first_air_date"`
-			} `json:"results"`
+			Results []searchResult `json:"results"`
 		}
 		q := url.Values{"query": {title}, "language": {c.Lang}}
 		if err := c.get(ctx, "/search/"+kind, q, &out); err != nil {
 			return Entry{}, err
 		}
-		for _, r := range out.Results {
-			name := r.Title
-			if name == "" {
-				name = r.Name
-			}
-			if media.Normalize(name) != want {
+		responses[kind] = out.Results
+	}
+
+	want := media.Normalize(title)
+
+	// Pass 1: the entry's own name.
+	for _, kind := range kinds {
+		var exact []searchResult
+		for _, r := range responses[kind] {
+			if !yearCompatible(kind, parsed.Year, yearFrom(r.ReleaseDate, r.FirstAirDate)) {
 				continue
 			}
-			y := yearFrom(r.ReleaseDate, r.FirstAirDate)
-			if !yearCompatible(kind, parsed.Year, y) {
-				continue
-			}
-			e, ok := c.fill(ctx, r.ID, kind, "title", 0.9)
-			if !ok {
-				continue
-			}
-			// Prefer the candidate whose year is closest to the release,
-			// which is what disambiguates a remake. Without a release year,
-			// fall back to the better-known entry.
-			delta := abs(e.Year - parsed.Year)
-			switch {
-			case best.ID == 0:
-				best = e
-				bestDelta, bestScore = delta, e.Rating
-			case parsed.Year != 0 && delta < bestDelta:
-				best = e
-				bestDelta, bestScore = delta, e.Rating
-			case parsed.Year != 0 && delta == bestDelta && e.Rating > bestScore:
-				best = e
-				bestScore = e.Rating
-			case parsed.Year == 0 && e.Rating > bestScore:
-				best = e
-				bestScore = e.Rating
+			if matchesAnyName(r.ownNames(), want) {
+				exact = append(exact, r)
 			}
 		}
-		if best.ID != 0 {
-			return best, nil
+		if e, ok := c.pickBest(ctx, kind, parsed, exact, 0.9); ok {
+			return e, nil
+		}
+	}
+
+	// Pass 2: the entry's alias. Only names the search offered are tried, and
+	// an alias has to equal one of them exactly, so this widens which name can
+	// match without accepting whatever the search happened to rank first.
+	//
+	// An alias match is weaker evidence than an exact name, so a query too
+	// short to identify a work is not allowed to use it. A two-letter Latin
+	// query matches something for any pair of letters: "Re" resolves an entry
+	// named "ARTE Re:" through its alias "Re:". Chinese names are exempt,
+	// because two characters are a complete and distinctive title there
+	// ("黑门").
+	if !distinctiveQuery(want) {
+		return Entry{}, ErrNoMatch
+	}
+	for _, kind := range kinds {
+		var cands []searchResult
+		for _, r := range responses[kind] {
+			if !yearCompatible(kind, parsed.Year, yearFrom(r.ReleaseDate, r.FirstAirDate)) {
+				continue
+			}
+			// A candidate whose own name already equals the query was handled
+			// by pass 1 and did not resolve, so it is not retried here.
+			if matchesAnyName(r.ownNames(), want) {
+				continue
+			}
+			cands = append(cands, r)
+			if len(cands) == aliasCandidateLimit {
+				break
+			}
+		}
+		if e, ok := c.pickAlias(ctx, kind, parsed, cands, want); ok {
+			return e, nil
 		}
 	}
 	return Entry{}, ErrNoMatch
+}
+
+// distinctiveQuery reports whether a normalised query is long enough to
+// identify a work on its own.
+func distinctiveQuery(want string) bool {
+	r := []rune(want)
+	if len(r) >= aliasMinRunes {
+		return true
+	}
+	for _, c := range r {
+		if unicode.Is(unicode.Han, c) {
+			return true
+		}
+	}
+	return false
+}
+
+// aliasMinRunes is the shortest Latin query the alias pass will accept.
+const aliasMinRunes = 3
+
+// aliasCandidateLimit bounds how many search results the alias pass resolves.
+// Each costs a detail request, and an alias match is only ever found near the
+// top: TMDB ranks a work highly for a name it also lists as an alias.
+const aliasCandidateLimit = 5
+
+// matchesAnyName reports whether any name normalises to want.
+func matchesAnyName(names []string, want string) bool {
+	if want == "" {
+		return false
+	}
+	for _, n := range names {
+		if media.Normalize(n) == want {
+			return true
+		}
+	}
+	return false
+}
+
+// pickBest fills the candidates and returns the most plausible one. Candidates
+// whose name already equals the query are preferred over the rest.
+func (c *Client) pickBest(ctx context.Context, kind string, parsed media.Result,
+	cands []searchResult, confidence float64) (Entry, bool) {
+
+	best := Entry{}
+	bestDelta, bestScore := 0, 0.0
+	for _, cd := range cands {
+		e, ok := c.fill(ctx, cd.ID, kind, "title", confidence)
+		if !ok {
+			continue
+		}
+		delta := abs(e.Year - parsed.Year)
+		switch {
+		case best.ID == 0:
+			best, bestDelta, bestScore = e, delta, e.Rating
+		case parsed.Year != 0 && delta < bestDelta:
+			best, bestDelta, bestScore = e, delta, e.Rating
+		case parsed.Year != 0 && delta == bestDelta && e.Rating > bestScore:
+			best, bestScore = e, e.Rating
+		case parsed.Year == 0 && e.Rating > bestScore:
+			best, bestScore = e, e.Rating
+		}
+	}
+	return best, best.ID != 0
+}
+
+// pickAlias resolves the candidates and accepts one whose alias equals the
+// query. The alias is only visible after the detail request, which is why this
+// cannot reuse the search response.
+//
+// The comparison is against the query itself, not against the candidate's own
+// name: "雪王来了" was searched, TMDB's search offered an entry named
+// "雪王驾到" because it lists "雪王来了" as an alias, and that alias is what
+// confirms the two are the same work. Accepting the candidate merely for being
+// ranked would make the match fuzzy instead of wider.
+func (c *Client) pickAlias(ctx context.Context, kind string, parsed media.Result,
+	cands []searchResult, want string) (Entry, bool) {
+
+	best := Entry{}
+	bestDelta, bestScore := 0, 0.0
+	for _, cd := range cands {
+		e, ok := c.fill(ctx, cd.ID, kind, "title", 0.8)
+		if !ok {
+			continue
+		}
+		if !aliasMatches(e, want) {
+			continue
+		}
+		delta := abs(e.Year - parsed.Year)
+		switch {
+		case best.ID == 0:
+			best, bestDelta, bestScore = e, delta, e.Rating
+		case parsed.Year != 0 && delta < bestDelta:
+			best, bestDelta, bestScore = e, delta, e.Rating
+		case parsed.Year != 0 && delta == bestDelta && e.Rating > bestScore:
+			best, bestScore = e, e.Rating
+		case parsed.Year == 0 && e.Rating > bestScore:
+			best, bestScore = e, e.Rating
+		}
+	}
+	return best, best.ID != 0
+}
+
+// aliasMatches reports whether any of the entry's aliases normalises to want.
+func aliasMatches(e Entry, want string) bool {
+	if want == "" {
+		return false
+	}
+	for _, a := range e.Aliases {
+		if media.Normalize(a) == want {
+			return true
+		}
+	}
+	return false
 }
 
 // yearCompatible reports whether an entry's year can plausibly be the work the
@@ -377,8 +544,19 @@ func (c *Client) fill(ctx context.Context, id int, kind, matchedBy string, confi
 		ProductionCountries []struct {
 			ISO string `json:"iso_3166_1"`
 		} `json:"production_countries"`
+		// AlternativeTitles rides along on the same request rather than
+		// costing a second one. The aliases are what a fansub release actually
+		// publishes, so they are the difference between matching and not.
+		AlternativeTitles struct {
+			Results []struct {
+				Title string `json:"title"`
+			} `json:"results"`
+		} `json:"alternative_titles"`
 	}
-	q := url.Values{"language": {c.Lang}}
+	q := url.Values{
+		"language":           {c.Lang},
+		"append_to_response": {"alternative_titles"},
+	}
 	if err := c.get(ctx, "/"+kind+"/"+strconv.Itoa(id), q, &raw); err != nil {
 		return Entry{}, false
 	}
@@ -402,6 +580,16 @@ func (c *Client) fill(ctx context.Context, id int, kind, matchedBy string, confi
 			countries = append(countries, c.ISO)
 		}
 	}
+	aliases := make([]string, 0, len(raw.AlternativeTitles.Results))
+	seenAlias := map[string]bool{}
+	for _, a := range raw.AlternativeTitles.Results {
+		a.Title = strings.TrimSpace(a.Title)
+		if a.Title == "" || seenAlias[a.Title] {
+			continue
+		}
+		seenAlias[a.Title] = true
+		aliases = append(aliases, a.Title)
+	}
 	return Entry{
 		ID:            raw.ID,
 		Type:          kind,
@@ -420,6 +608,7 @@ func (c *Client) fill(ctx context.Context, id int, kind, matchedBy string, confi
 		OriginCountries:     raw.OriginCountry,
 		ProductionCountries: countries,
 		MatchedBy:           matchedBy,
+		Aliases:             aliases,
 		Confidence:          confidence,
 	}, true
 }

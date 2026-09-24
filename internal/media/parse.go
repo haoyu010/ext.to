@@ -80,6 +80,13 @@ var reChineseEpisode = regexp.MustCompile(`第\s*\d{1,4}(?:\s*[-~]\s*\d{1,4})?\s
 // 1x02 style markers.
 var reNxN = regexp.MustCompile(`(?:^|\s)(\d{1,2})x(\d{2})(?:\s|$)`)
 
+// A detached episode number, as fansub anime releases write it:
+// "[ANi] CANDY CARIES 蛀在糖糖裡 - 24 [1080P]". The number has to stand alone
+// between separators so that a year or a resolution in the same position is
+// not mistaken for an episode, and so that "Lian Ross - V (Album)" keeps its
+// title. Only the tail is searched, because that is where the episode sits.
+var reTrailingEpisode = regexp.MustCompile(`(?:^|\s)[-–—]\s*(\d{1,3})(?:\s|$|\[|【)`)
+
 // releaseTag matches tokens that only ever appear in the release-suffix part
 // of a name, never as part of a real title. The list is intentionally
 // conservative: a false positive truncates a title and ruins the match.
@@ -135,6 +142,19 @@ func Parse(raw string) Result {
 
 	s = NormalizeSeparators(s)
 
+	// A name that begins with a separator is the tail of one that was cut
+	// earlier, not a name.
+	//
+	// "[BDMV][251008-260325][桃源暗鬼 / Tougen Anki][BDMV][Vol.1-6 FIN][JPN]-YE"
+	// loses every leading group to stripLeadingGroups and leaves "-YE", whose
+	// cleaned form is "YE". Searching that resolves the release to a film
+	// actually called "Ye!", and the wrong match then decides the category and
+	// therefore whether the release is forwarded. Reporting no title is the
+	// honest answer, and callers already treat an empty title as "unknown".
+	if isDanglingTail(s) {
+		return Result{}
+	}
+
 	// Locate the earliest structural marker: an episode marker or a year.
 	// Everything before it is the title.
 	cut := len(s)
@@ -164,6 +184,15 @@ func Parse(raw string) Result {
 	} else if loc := reChineseEpisode.FindStringSubmatchIndex(s); loc != nil {
 		// A fansub episode marker means a series, even with no season number.
 		cut = min(cut, loc[0])
+		res.Kind = KindTV
+	} else if m := reTrailingEpisode.FindStringSubmatchIndex(s); m != nil {
+		// A fansub anime release marks its episode as a detached number
+		// ("[ANi] CANDY CARIES 蛀在糖糖裡 - 24") rather than with S01E24. Left
+		// unrecognised, the release is searched as a film and can bind to a
+		// same-named film entry, which then decides the category from the
+		// wrong genre set and drops a Chinese release that should be kept.
+		cut = min(cut, m[0])
+		res.Episode, _ = strconv.Atoi(s[m[2]:m[3]])
 		res.Kind = KindTV
 	}
 
@@ -359,6 +388,32 @@ func min(a, b int) int {
 	return b
 }
 
+// reDanglingTail matches a name that starts with a separator, which means the
+// real title was cut off earlier and only the tail survived.
+var reDanglingTail = regexp.MustCompile(`^\s*[-–—_.·:;/｜|]\s*`)
+
+// isDanglingTail reports whether s is the leftover tail of a release name
+// whose title was cut away, such as "-YE" or "-SHRI".
+//
+// The distinction matters because a short all-letters fragment looks exactly
+// like a real title: "-YE" becomes "YE", and TMDB has a film named "Ye!". The
+// leading separator is the only evidence that the text is a remnant, so it is
+// what the test keys on.
+//
+// The whole string has to be dangling, not merely contain a separator: real
+// titles use dashes internally ("Lian Ross - V (Album)") and must survive.
+func isDanglingTail(s string) bool {
+	m := reDanglingTail.FindString(s)
+	if m == "" {
+		return false
+	}
+	rest := strings.TrimSpace(s[len(m):])
+	// A tail that still holds a meaningful phrase (more than one word) is
+	// treated as a title, since cutting at the first separator would throw
+	// away names such as "- A Quiet Place".
+	return rest != "" && !strings.ContainsAny(rest, " /｜|")
+}
+
 // reAltSeparator splits the several names a fansub release lists for one work.
 // Chinese animation is published as "中文名 / Romaji / English", so the full
 // string matches nothing and each alternative has to be tried on its own.
@@ -380,11 +435,23 @@ var reSegments = regexp.MustCompile(`\s+[-–—]\s+`)
 func SearchTitles(raw string) []string {
 	var out []string
 	seen := map[string]bool{}
-	add := func(s string) {
+	// Declared before it is assigned so the body can call itself: a candidate
+	// yields further candidates (a sequel marker removed, a script run
+	// isolated), and each is shorter than its parent, so this terminates.
+	var add func(string)
+	add = func(s string) {
 		s = strings.TrimSpace(strings.Trim(s, "-–—_.·:;,[]【】"))
-		// A bracketed fragment left over from splitting ("[1080p] GuAn") is
-		// noise, not a title.
-		if strings.ContainsAny(s, "[]【】") || s == "" {
+		if s == "" {
+			return
+		}
+		// A bracketed fragment left over from splitting is noise, not a title.
+		// The group may still be hiding the name ("[绿茶字幕组] 再见拉拉"), so
+		// the group is removed and the remainder offered instead of dropping
+		// the candidate outright.
+		if strings.ContainsAny(s, "[]【】") {
+			if stripped := stripLeadingGroups(s); stripped != s && stripped != "" {
+				add(stripped)
+			}
 			return
 		}
 		if releaseTag[strings.ToLower(s)] {
@@ -402,12 +469,34 @@ func SearchTitles(raw string) []string {
 		}
 		seen[s] = true
 		out = append(out, s)
+
+		// A sequel marker is not part of the name TMDB stores: the release is
+		// "幼女战记II" while the entry is "幼女战记", and "碧蓝之海3 Grand Blue
+		// Dreaming!" while the entry is "碧蓝之海". Offering the name without
+		// the marker is what lets those match at all. The original is kept, so
+		// this only ever adds an attempt.
+		if stripped := stripSequelMarker(s); stripped != "" {
+			add(stripped)
+		}
+
+		// A dub note ("罗拉航海日记 中文配音") describes the release rather than
+		// the work, so the name without it is offered as well.
+		if stripped := stripDubbingMarker(s); stripped != "" {
+			add(stripped)
+		}
+
+		// Fansub releases write the Chinese and Latin names as one candidate
+		// ("碧蓝之海3 Grand Blue Dreaming!"), which matches nothing as a
+		// whole. Each script run is offered on its own so the Chinese name can
+		// reach the localised entry and the Latin one its alias.
+		if len(splitByScript(s)) > 1 {
+			for _, part := range splitByScript(s) {
+				add(part)
+			}
+		}
 	}
 
-	// Parse only strips one leading bracket, so the name is also parsed with
-	// every leading group removed; "[Shridhuu][1080p] GuAn / 一斩苍穹" otherwise
-	// keeps the second bracket in its title.
-	for _, basis := range []string{Parse(raw).Title, Parse(stripLeadingGroups(raw)).Title} {
+	for _, basis := range searchBases(raw) {
 		add(basis)
 		// The alternatives live in the text these forms produced, so splitting
 		// them keeps whatever markers parsing already removed.
@@ -425,6 +514,234 @@ func SearchTitles(raw string) []string {
 	}
 	return out
 }
+
+// searchBases returns the strings a search term can be derived from, most
+// likely first.
+//
+// Parse reports one title, which is right for a caption but not for a search.
+// Three shapes need different treatment:
+//
+//   - A clean title ("[Shridhuu][1080p] GuAn / 一斩苍穹") is used as is.
+//   - A name that is a stack of bracket groups
+//     ("[BDMV][251008-260325][桃源暗鬼 / Tougen Anki][BDMV][Vol.1-6 FIN][JPN]")
+//     has no clean title at all: the title sits inside one of the groups, so
+//     the groups themselves are offered.
+//   - A name whose every leading group was stripped may leave a remnant
+//     ("-YE"), which is not a title and must never be searched.
+func searchBases(raw string) []string {
+	var out []string
+	seen := map[string]bool{}
+	push := func(s string) {
+		s = strings.TrimSpace(s)
+		if s == "" || seen[s] {
+			return
+		}
+		seen[s] = true
+		out = append(out, s)
+	}
+
+	primary := Parse(raw).Title
+	push(primary)
+
+	// The primary title keeps a bracket only when parsing could not find a
+	// structural marker, which is exactly the stacked-group shape. The groups
+	// are then the only place the real title appears.
+	if strings.ContainsAny(primary, "[]【】") {
+		for _, g := range titleBracketGroups(raw) {
+			push(g)
+			for _, part := range reAltSeparator.Split(g, -1) {
+				push(part)
+			}
+		}
+	}
+
+	// The form with every leading group removed covers "[group][tag] 标题",
+	// where Parse strips only the first group. A remnant of that stripping is
+	// skipped: it is the tail of a name whose title was cut away.
+	stripped := stripLeadingGroups(raw)
+	if !isDanglingTail(stripped) {
+		push(Parse(stripped).Title)
+	}
+	return out
+}
+
+// reBracketGroup captures one bracketed group and its contents.
+var reBracketGroup = regexp.MustCompile(`[\[【]([^\]】]{2,120})[\]】]`)
+
+// titleBracketGroups returns the contents of the bracketed groups in s, which
+// is where the title lives when a release name is a stack of groups.
+//
+// Group contents that are clearly metadata rather than a name are dropped:
+// release tags ("1080p"), resolution-like tokens and purely numeric groups
+// ("251008-260325") are never titles. A single Latin word is also skipped,
+// since it is far more often a group name ("BDMV") than a work; a Chinese
+// word is kept, because for this corpus it usually is the work.
+func titleBracketGroups(s string) []string {
+	var out []string
+	for _, m := range reBracketGroup.FindAllStringSubmatch(s, -1) {
+		content := strings.TrimSpace(m[1])
+		if content == "" || isNumericFragment(content) {
+			continue
+		}
+		if releaseTag[strings.ToLower(content)] {
+			continue
+		}
+		if !strings.ContainsAny(content, " /｜|") && !hasHan(content) &&
+			len([]rune(content)) < 6 {
+			continue
+		}
+		out = append(out, content)
+	}
+	return out
+}
+
+// hasHan reports whether s contains a CJK ideograph.
+func hasHan(s string) bool {
+	for _, r := range s {
+		if unicode.Is(unicode.Han, r) {
+			return true
+		}
+	}
+	return false
+}
+
+// reSequelTail matches a title and the sequel marker a release appends to it,
+// with the title captured in group 1. TMDB stores the work without the marker,
+// so the captured form is offered as an extra candidate: the release is
+// "幼女战记II" or "碧蓝之海3" while the entry is "幼女战记" and "碧蓝之海".
+//
+// The marker must be its own token, either detached ("Clevatess II", "Part 2")
+// or glued straight onto a Han character ("碧蓝之海3"). Requiring that is what
+// stops the pattern from eating a letter off an ordinary word: "Youjo Senki"
+// and "Shitai" both end in "i", and a looser rule would turn them into "Youjo
+// Senk" and "Shita", searching for titles that do not exist and burying the
+// real candidate behind them.
+//
+// The group is greedy so that the longest title wins, which keeps the glued
+// form from splitting in the wrong place: "碧蓝之海3" must yield "碧蓝之海",
+// not "碧蓝之".
+var reSequelTail = regexp.MustCompile(`(?is)^(.+?)(?:\s+(?:part\s*\d+|season\s*\d+|chapter\s*\d+|\d{1,2}|[ivx]{1,5})|(?:\p{Han})(?:\d{1,2}|[ivx]{1,5})|\s*第\s*[0-9一二三四五六七八九十]+\s*[季部期])$`)
+
+// stripSequelMarker removes a trailing sequel marker. It returns "" when
+// nothing was removed or when the remainder is too short to be a title.
+func stripSequelMarker(s string) string {
+	// The glued alternative captures the title without its final Han
+	// character, because the marker is what immediately follows it. Trying the
+	// detached form first keeps the two cases from interfering.
+	rest := ""
+	if m := reSequelDetached.FindStringSubmatch(s); m != nil {
+		rest = m[1]
+	} else if m := reSequelGlued.FindStringSubmatch(s); m != nil {
+		rest = m[1] + m[2]
+	}
+	rest = strings.TrimSpace(strings.Trim(rest, " -–—_.·:;,"))
+	if len([]rune(rest)) < 2 || isNumericFragment(rest) {
+		return ""
+	}
+	return rest
+}
+
+// reSequelDetached matches a marker that stands apart from the title.
+//
+// Roman numerals are case-sensitive on purpose. Releases write sequels as
+// "II" or "IV", and matching them case-insensitively would also strip the
+// "ix" off "The Mix" or the "vi" off "Vivi", offering searches for nonsense
+// titles. The spelled-out forms are case-insensitive because "Part 2" and
+// "part 2" both occur.
+var reSequelDetached = regexp.MustCompile(`(?s)^(.+?)\s+(?:(?i:part\s*\d+|season\s*\d+|chapter\s*\d+)|\d{1,2}|[IVX]{1,5})$`)
+
+// reSequelGlued matches a marker written straight onto a Han character, so the
+// title keeps that character (group 2) and loses only the marker.
+var reSequelGlued = regexp.MustCompile(`(?s)^(.+?)(\p{Han})(?:\d{1,2}|[IVX]{1,5})$`)
+
+// reDubbingMarker matches a trailing dub or subtitle note.
+//
+// "罗拉航海日记 中文配音" is the same work as "罗拉航海日记", and TMDB stores
+// only the latter. The note is a property of the release, not of the work, so
+// it is offered in a stripped form too.
+var reDubbingMarker = regexp.MustCompile(`(?s)\s*(?:中文配音|国语|粤语|台配|日语|双语|中字|简中|繁中|简繁|中英|字幕|内封|外挂|无修|未删减)\s*$`)
+
+// stripDubbingMarker removes a trailing dub or subtitle note.
+func stripDubbingMarker(s string) string {
+	rest := strings.TrimSpace(strings.Trim(reDubbingMarker.ReplaceAllString(s, ""), " -–—_.·:;,"))
+	if len([]rune(rest)) < 2 || rest == s {
+		return ""
+	}
+	return rest
+}
+
+// splitByScript splits a name into its script runs, dropping the runs that
+// mark an episode or a resolution.
+//
+// Fansub releases write the Chinese and Latin names as one string
+// ("碧蓝之海3 Grand Blue Dreaming!"), which as a whole matches nothing. The
+// Chinese run reaches the localised entry and the Latin run its alias, so each
+// is worth offering separately. A single-script name returns one part and is
+// left alone, because splitting it would only add noise.
+func splitByScript(s string) []string {
+	var parts []string
+	var cur []rune
+	var curClass int
+	flush := func() {
+		if len(cur) > 0 {
+			parts = append(parts, strings.TrimSpace(string(cur)))
+			cur = nil
+		}
+	}
+	for _, r := range s {
+		var class int
+		switch {
+		case unicode.Is(unicode.Han, r):
+			class = 1
+		case unicode.Is(unicode.Hiragana, r) || unicode.Is(unicode.Katakana, r):
+			class = 2
+		case unicode.IsLetter(r):
+			class = 3
+		case unicode.IsDigit(r) || unicode.IsSpace(r):
+			// Digits and spaces belong to whichever run surrounds them, so a
+			// sequel marker ("碧蓝之海3") or a multi-word Latin name ("Grand
+			// Blue Dreaming") is not split in two.
+			cur = append(cur, r)
+			continue
+		default:
+			// A separator ends the run. Keeping it would produce candidates
+			// such as "GuAn /", which normalises to the same string as "GuAn"
+			// and therefore shadows it in the caller's de-duplication.
+			flush()
+			curClass = 0
+			continue
+		}
+		if curClass != 0 && class != curClass {
+			flush()
+		}
+		curClass = class
+		cur = append(cur, r)
+	}
+	flush()
+
+	var out []string
+	for _, p := range parts {
+		p = strings.TrimSpace(strings.Trim(p, " -–—_.·:;,!/｜|"))
+		if len([]rune(p)) < 2 || isNumericFragment(p) || releaseTag[strings.ToLower(p)] {
+			continue
+		}
+		// A short Latin run in a mixed-script name is a prefix or an
+		// abbreviation, not a title: splitting
+		// "Re: 從零開始的異世界的生活 ... Zero kara Hajimeru Isekai Seikatsu"
+		// yields "Re", and TMDB answers a two-letter query with whatever entry
+		// happens to match it exactly ("ARTE Re:"). A short Chinese run is
+		// left alone, because two characters are a complete title there
+		// ("黑门").
+		if !hasHan(p) && len([]rune(p)) < minLatinFragment {
+			continue
+		}
+		out = append(out, p)
+	}
+	return out
+}
+
+// minLatinFragment is the shortest Latin run worth searching on its own.
+const minLatinFragment = 3
 
 // reLeadingGroup matches a bracketed group at the start of a release name.
 //

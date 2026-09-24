@@ -92,13 +92,25 @@ func TestParseChinesePrefix(t *testing.T) {
 
 // A bracketed fansub group is metadata, not a type hint, so it must be
 // dropped without changing the inferred kind.
+//
+// The episode marker is stripped and the kind inferred as tv. The release is
+// "[kotopi] The World Is Dancing - 13", and "The World Is Dancing - 13" is not
+// a title TMDB stores, so keeping the marker meant the release could never
+// match. The kind is a separate matter from the bracket: it comes from the
+// detached episode number, not from the group name.
 func TestParseFansubBracket(t *testing.T) {
 	got := Parse("[kotopi] The World Is Dancing - 13 (WEB 1080p) (sub. español)")
 	if got.Prefix != "" {
 		t.Errorf("Prefix = %q, want empty", got.Prefix)
 	}
-	if got.Title != "The World Is Dancing - 13" {
-		t.Errorf("Title = %q, want %q", got.Title, "The World Is Dancing - 13")
+	if got.Title != "The World Is Dancing" {
+		t.Errorf("Title = %q, want %q", got.Title, "The World Is Dancing")
+	}
+	if got.Kind != KindTV {
+		t.Errorf("Kind = %q, want tv", got.Kind)
+	}
+	if got.Episode != 13 {
+		t.Errorf("Episode = %d, want 13", got.Episode)
 	}
 }
 
@@ -209,5 +221,107 @@ func TestSearchTitlesAreClean(t *testing.T) {
 				t.Errorf("candidate %q for %q is numeric", got, in)
 			}
 		}
+	}
+}
+
+// A release name that is a stack of bracket groups has no title outside the
+// groups, so the group contents are the only thing worth searching.
+//
+// Parsing it whole used to leave a remnant: every leading group was stripped
+// and the tail "-YE" was then read as a title, resolving the release to a film
+// actually called "Ye!". A wrong match is worse than no match, because it
+// decides the category and therefore whether the release is forwarded.
+func TestSearchTitlesReadStackedGroups(t *testing.T) {
+	got := SearchTitles("[BDMV][251008-260325][桃源暗鬼 / Tougen Anki][BDMV][Vol.1-6 FIN][JPN]-YE")
+	found := map[string]bool{}
+	for _, g := range got {
+		found[g] = true
+		// The remnant of stripping must never be offered.
+		if Normalize(g) == "ye" {
+			t.Errorf("candidate %q is the stripped tail, not a title", g)
+		}
+		// The group's own name is metadata, not a work.
+		if g == "BDMV" {
+			t.Errorf("candidates %v include the group name", got)
+		}
+	}
+	if !found["桃源暗鬼"] {
+		t.Errorf("candidates %v are missing the title from the group", got)
+	}
+}
+
+// A sequel marker is not part of the name TMDB stores, so the name without it
+// has to be offered. The marker is only recognised as its own token: a looser
+// rule would eat the last letter of an ordinary word, because "Youjo Senki"
+// and "Shitai" both end in "i".
+func TestSearchTitlesStripSequelMarker(t *testing.T) {
+	cases := []struct {
+		in   string
+		want string
+	}{
+		{"幼女战记II", "幼女战记"},
+		{"碧蓝之海3", "碧蓝之海"},
+		{"Clevatess II", "Clevatess"},
+		{"流浪地球 2", "流浪地球"},
+	}
+	for _, tc := range cases {
+		if got := stripSequelMarker(tc.in); got != tc.want {
+			t.Errorf("stripSequelMarker(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+	// A title that merely ends in a letter must survive untouched.
+	for _, in := range []string{"Youjo Senki", "Kimi ga Shinu made Koi wo Shitai", "碧蓝之海"} {
+		if got := stripSequelMarker(in); got != "" {
+			t.Errorf("stripSequelMarker(%q) = %q, want no change", in, got)
+		}
+	}
+}
+
+// A dub note describes the release rather than the work, so the name without
+// it is offered as well.
+func TestSearchTitlesStripDubbingMarker(t *testing.T) {
+	if got := stripDubbingMarker("罗拉航海日记 中文配音"); got != "罗拉航海日记" {
+		t.Errorf("stripDubbingMarker = %q, want 罗拉航海日记", got)
+	}
+	// A name with no note must not be altered.
+	if got := stripDubbingMarker("罗拉航海日记"); got != "" {
+		t.Errorf("stripDubbingMarker = %q, want no change", got)
+	}
+}
+
+// Fansub releases write the Chinese and Latin names as one candidate, which
+// matches nothing as a whole. Each script run has to be offered on its own.
+func TestSearchTitlesSplitScripts(t *testing.T) {
+	got := SearchTitles("【极影字幕·毁片党】碧蓝之海3 Grand Blue Dreaming! S3 第01-12集 GB_CN AV1_opus 1080p")
+	found := map[string]bool{}
+	for _, g := range got {
+		found[g] = true
+	}
+	if !found["碧蓝之海"] {
+		t.Errorf("candidates %v are missing the Chinese name without its sequel number", got)
+	}
+	if !found["Grand Blue Dreaming"] {
+		t.Errorf("candidates %v are missing the Latin name", got)
+	}
+}
+
+// A detached episode number marks a series. Unrecognised, the release is
+// searched as a film and can bind to a same-named film entry, which then
+// decides the category from the wrong genre set.
+func TestParseDetachedEpisodeNumber(t *testing.T) {
+	got := Parse("[ANi]  CANDY CARIES 蛀在糖糖裡 - 24 [1080P][Baha][WEB-DL][AAC AVC][CHT][MP4]")
+	if got.Kind != KindTV {
+		t.Errorf("Kind = %q, want tv", got.Kind)
+	}
+	if got.Episode != 24 {
+		t.Errorf("Episode = %d, want 24", got.Episode)
+	}
+	if got.Title != "CANDY CARIES 蛀在糖糖裡" {
+		t.Errorf("Title = %q, want the episode number removed", got.Title)
+	}
+
+	// A title with an internal dash must keep it.
+	if lian := Parse("Lian Ross - V (Album) (Extended Versions) (2026)"); lian.Episode != 0 {
+		t.Errorf("Episode = %d, want no episode for a dashed title", lian.Episode)
 	}
 }
