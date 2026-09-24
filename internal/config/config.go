@@ -42,6 +42,21 @@ var CategoryNames = map[int]string{
 	CatAll:    "All",
 }
 
+// CategoryNamesZH maps category ids to Chinese display names for the
+// dashboard. The forwarder only ever uses CategoryNames for log lines, so the
+// two maps stay independent.
+var CategoryNamesZH = map[int]string{
+	CatMovies: "电影",
+	CatTV:     "剧集",
+	CatMusic:  "音乐",
+	CatGames:  "游戏",
+	CatApps:   "软件",
+	CatBooks:  "图书",
+	CatAnime:  "动漫",
+	CatOther:  "其他",
+	CatAll:    "全部",
+}
+
 // Age windows accepted by the age= query param. Age 5+ is not a real window
 // (ext.to redirects those to the advanced search page), so it is excluded.
 var AgeNames = map[int]string{
@@ -50,6 +65,15 @@ var AgeNames = map[int]string{
 	2: "Last 7 days",
 	3: "Last 14 days",
 	4: "Last month",
+}
+
+// AgeNamesZH maps age windows to Chinese display names for the dashboard.
+var AgeNamesZH = map[int]string{
+	0: "最近 24 小时",
+	1: "最近 3 天",
+	2: "最近 7 天",
+	3: "最近 14 天",
+	4: "最近 1 个月",
 }
 
 // Store holds the mutable settings plus the file they are persisted to.
@@ -93,6 +117,21 @@ type Settings struct {
 	Silent     bool   `json:"silent"`
 	DisableWeb bool   `json:"disable_web_preview"`
 
+	// --- tmdb enrichment ------------------------------------------------
+	// TMDBKey enables matching posts against The Movie Database. An empty
+	// key disables enrichment entirely.
+	TMDBKey string `json:"tmdb_key"`
+	// TMDBLang sets the language for titles and overviews, for example
+	// "zh-CN" or "en-US".
+	TMDBLang string `json:"tmdb_lang"`
+	// TMDBOnly keeps the forwarder from posting torrents with no TMDB match,
+	// so the channel only ever receives verified movie and TV releases.
+	TMDBOnly bool `json:"tmdb_only"`
+	// PosterSource picks where the poster image comes from: "auto" prefers
+	// the TMDB artwork and falls back to the tracker image, "tmdb" and
+	// "tracker" force one source.
+	PosterSource string `json:"poster_source"`
+
 	// --- scheduling ----------------------------------------------------
 	IntervalSeconds int  `json:"interval_seconds"`
 	BatchSize       int  `json:"batch_size"`
@@ -119,10 +158,23 @@ func Default() Settings {
 		IntervalSeconds: 600,
 		BatchSize:       10,
 		Enabled:         false,
+		TMDBLang:        "zh-CN",
+		TMDBOnly:        false,
+		PosterSource:    PosterSourceAuto,
 		AdminUser:       "admin",
 		AdminPassword:   "admin",
 	}
 }
+
+// Poster image sources accepted by Settings.PosterSource.
+const (
+	PosterSourceAuto    = "auto"
+	PosterSourceTMDB    = "tmdb"
+	PosterSourceTracker = "tracker"
+)
+
+// PosterSources lists the valid PosterSource values for the UI.
+var PosterSources = []string{PosterSourceAuto, PosterSourceTMDB, PosterSourceTracker}
 
 // DefaultUserAgent mirrors the Chrome build used to harvest clearance
 // cookies. Cloudflare compares it against the UA bound to cf_clearance.
@@ -133,7 +185,7 @@ const DefaultUserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/
 // error describing the first problem found.
 func (s *Settings) Validate() error {
 	if s.Age < 0 || s.Age > 4 {
-		return fmt.Errorf("age window must be between 0 and 4")
+		return fmt.Errorf("时间范围必须在 0 到 4 之间")
 	}
 	if s.MaxPages < 1 {
 		s.MaxPages = 1
@@ -159,12 +211,27 @@ func (s *Settings) Validate() error {
 	if s.Template == "" {
 		s.Template = DefaultTemplate
 	}
+	if s.TMDBLang == "" {
+		s.TMDBLang = "zh-CN"
+	}
+	if s.PosterSource == "" {
+		s.PosterSource = PosterSourceAuto
+	}
+	switch s.PosterSource {
+	case PosterSourceAuto, PosterSourceTMDB, PosterSourceTracker:
+	default:
+		return fmt.Errorf("海报来源只能是 %s、%s 或 %s",
+			PosterSourceAuto, PosterSourceTMDB, PosterSourceTracker)
+	}
+	if s.PosterSource != PosterSourceTracker && s.TMDBOnly && s.TMDBKey == "" {
+		return fmt.Errorf("勾选「只推送匹配到 TMDB 的种子」时必须填写 TMDB API Key")
+	}
 	if len(s.Categories) == 0 {
 		s.Categories = []int{CatAll}
 	}
 	for _, c := range s.Categories {
 		if _, ok := CategoryNames[c]; !ok {
-			return fmt.Errorf("unknown category id %d", c)
+			return fmt.Errorf("未知的分类编号 %d", c)
 		}
 	}
 	for _, pat := range append(append([]string{}, s.Include...), s.Exclude...) {
@@ -172,24 +239,24 @@ func (s *Settings) Validate() error {
 			continue
 		}
 		if _, err := regexp.Compile(pat); err != nil {
-			return fmt.Errorf("invalid regular expression %q: %w", pat, err)
+			return fmt.Errorf("正则表达式 %q 无效：%w", pat, err)
 		}
 	}
 	if s.MinSizeMB < 0 || s.MaxSizeMB < 0 {
-		return fmt.Errorf("size filters cannot be negative")
+		return fmt.Errorf("体积过滤不能为负数")
 	}
 	if s.MaxSizeMB > 0 && s.MinSizeMB > s.MaxSizeMB {
-		return fmt.Errorf("minimum size is larger than maximum size")
+		return fmt.Errorf("最小体积大于最大体积")
 	}
 	if s.Enabled {
 		if s.BotToken == "" {
-			return fmt.Errorf("telegram bot token is required when monitoring is enabled")
+			return fmt.Errorf("开启监听前请先填写机器人 Token")
 		}
 		if s.ChatID == "" {
-			return fmt.Errorf("telegram chat id is required when monitoring is enabled")
+			return fmt.Errorf("开启监听前请先填写 Chat ID")
 		}
 		if s.Clearance == "" {
-			return fmt.Errorf("cf_clearance cookie is required when monitoring is enabled")
+			return fmt.Errorf("开启监听前请先填写 cf_clearance Cookie")
 		}
 	}
 	return nil
@@ -201,6 +268,7 @@ func (s Settings) Masked() Settings {
 	c.BotToken = mask(s.BotToken)
 	c.Clearance = mask(s.Clearance)
 	c.Session = mask(s.Session)
+	c.TMDBKey = mask(s.TMDBKey)
 	c.AdminPassword = ""
 	return c
 }

@@ -154,11 +154,19 @@ func (c *Client) FetchList(ctx context.Context, opt FetchOptions) ([]Item, error
 // FetchMagnet resolves the signed magnet link for a torrent by reading the
 // detail page (which carries the per-page token) and calling the JSON endpoint.
 func (c *Client) FetchMagnet(ctx context.Context, item Item) (string, error) {
-	detailURL := c.detailURL(item)
-	body, err := c.get(ctx, detailURL)
+	body, err := c.get(ctx, c.detailURL(item))
 	if err != nil {
 		return "", err
 	}
+	return c.MagnetFromDetail(ctx, item, body)
+}
+
+// MagnetFromDetail resolves the magnet link using an already-fetched detail
+// page. The page token is bound to both the torrent and that specific page
+// load, so the body must belong to this item. Passing a body in saves a
+// second request when the caller already read the page for other metadata.
+func (c *Client) MagnetFromDetail(ctx context.Context, item Item, body []byte) (string, error) {
+	detailURL := c.detailURL(item)
 	token, csrf := parseTokens(body)
 	if token == "" || csrf == "" {
 		return "", errors.New("page token not found; page layout may have changed")
@@ -215,6 +223,59 @@ func (c *Client) FetchMagnet(ctx context.Context, item Item) (string, error) {
 		return "magnet:?xt=urn:btih:" + out.Hash, nil
 	}
 	return "", errors.New("magnet endpoint returned no link")
+}
+
+// Detail holds the metadata scraped from a torrent's detail page.
+type Detail struct {
+	// PosterURL is the full-size poster, when the page has one.
+	PosterURL string
+	// IMDbID is an id such as "tt6473542", when the page declares one. It is
+	// the most reliable bridge to TMDB, so it is preferred over title search.
+	IMDbID string
+	// Title is the canonical work title from the page's info list, for
+	// example "Glass Onion: A Knives Out Mystery". Empty when absent.
+	Title string
+	// Kind is "movie" or "tv" when the page declares the media type.
+	Kind string
+}
+
+// Info page labels that state the canonical title and media type.
+var infoTitleLabels = map[string]string{
+	"movie":     "movie",
+	"tv show":   "tv",
+	"tv":        "tv",
+	"series":    "tv",
+	"tv series": "tv",
+}
+
+// FetchDetailPage reads a torrent's detail page and returns the raw body.
+//
+// Callers that need more than one derived value should use this together with
+// ParseDetail and MagnetFromDetail: the magnet endpoint's page token is bound
+// to a single page load, so reusing one body saves a request and guarantees
+// the token matches the item being published.
+func (c *Client) FetchDetailPage(ctx context.Context, item Item) ([]byte, error) {
+	return c.get(ctx, c.detailURL(item))
+}
+
+// ParseDetail extracts the metadata the forwarder needs from a detail page.
+func ParseDetail(body []byte) Detail {
+	d := Detail{
+		PosterURL: parsePosterURL(body),
+		IMDbID:    parseIMDbID(body),
+	}
+	d.Title, d.Kind = parseInfoTitle(body)
+	return d
+}
+
+// FetchDetail reads a detail page once and extracts every field the
+// forwarder needs, so a torrent costs a single extra request.
+func (c *Client) FetchDetail(ctx context.Context, item Item) (Detail, error) {
+	body, err := c.FetchDetailPage(ctx, item)
+	if err != nil {
+		return Detail{}, err
+	}
+	return ParseDetail(body), nil
 }
 
 // FetchPoster returns the best available poster image URL for a detail page,
@@ -466,6 +527,77 @@ func idFromSlug(slug string) (int, bool) {
 	id, err := strconv.Atoi(m[1])
 	return id, err == nil
 }
+
+// parseIMDbID returns the IMDb title id declared on a detail page.
+//
+// Only the info list is consulted. ext.to renders "IMDb link:" next to a
+// link to imdb.com/title/{id}, and that labelled link is the reliable source;
+// scanning the whole document would also pick up ids from the "you may also
+// like" sidebar and attribute a stranger's film to this torrent.
+func parseIMDbID(body []byte) string {
+	var found string
+	forEachInfoItem(body, func(label string, li, _ *html.Node) {
+		if found != "" || !strings.HasPrefix(label, "imdb link") {
+			return
+		}
+		if a := findDescendant(li, func(n *html.Node) bool {
+			return n.Type == html.ElementNode && n.Data == "a" &&
+				strings.Contains(attr(n, "href"), "imdb.com/title/")
+		}); a != nil {
+			if m := reIMDbID.FindStringSubmatch(attr(a, "href")); m != nil {
+				found = m[1]
+			}
+		}
+	})
+	return found
+}
+
+// parseInfoTitle returns the canonical title and media kind from the detail
+// page's info list, for example "Movie: Ring Ring" or "TV Show: ...".
+func parseInfoTitle(body []byte) (title, kind string) {
+	forEachInfoItem(body, func(label string, li, strong *html.Node) {
+		k, ok := infoTitleLabels[label]
+		if !ok || title != "" {
+			return
+		}
+		// Drop the leading "Movie:" label. Splitting on the first colon would
+		// break titles that legitimately contain one, such as
+		// "Glass Onion: A Knives Out Mystery".
+		full := strings.TrimSpace(textOf(li))
+		labelText := strings.TrimSpace(textOf(strong))
+		title = strings.TrimSpace(strings.TrimPrefix(full, labelText))
+		kind = k
+	})
+	return title, kind
+}
+
+// forEachInfoItem walks the <li><strong>Label:</strong> ...</li> entries of
+// the detail page info list, handing each label (lowercased, colon removed)
+// plus its <li> and <strong> nodes to fn.
+func forEachInfoItem(body []byte, fn func(label string, li, strong *html.Node)) {
+	doc, err := html.Parse(bytes.NewReader(body))
+	if err != nil {
+		return
+	}
+	forEachNode(doc, func(n *html.Node) {
+		if n.Type != html.ElementNode || n.Data != "li" {
+			return
+		}
+		strong := findDescendant(n, func(c *html.Node) bool {
+			return c.Type == html.ElementNode && c.Data == "strong"
+		})
+		if strong == nil {
+			return
+		}
+		label := strings.ToLower(strings.TrimSuffix(
+			strings.TrimSpace(textOf(strong)), ":"))
+		if label != "" {
+			fn(label, n, strong)
+		}
+	})
+}
+
+var reIMDbID = regexp.MustCompile(`imdb\.com/title/(tt\d{5,})`)
 
 func absURL(href string) string {
 	if href == "" {

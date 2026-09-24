@@ -79,6 +79,8 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("POST /api/check", s.auth(s.handleCheck))
 	mux.HandleFunc("POST /api/test", s.auth(s.handleTest))
 	mux.HandleFunc("POST /api/test-telegram", s.auth(s.handleTestTelegram))
+	mux.HandleFunc("POST /api/test-tmdb", s.auth(s.handleTestTMDB))
+	mux.HandleFunc("POST /api/tmdb-lookup", s.auth(s.handleTMDBLookup))
 	mux.HandleFunc("POST /api/start", s.auth(s.handleStart))
 	mux.HandleFunc("POST /api/stop", s.auth(s.handleStop))
 	mux.HandleFunc("POST /api/clear", s.auth(s.handleClear))
@@ -252,12 +254,20 @@ func metaPayload() map[string]any {
 	cats := make([]map[string]any, 0, len(config.CategoryNames))
 	for i := 1; i <= 9; i++ {
 		if name, ok := config.CategoryNames[i]; ok {
-			cats = append(cats, map[string]any{"id": i, "name": name})
+			label := name
+			if zh, ok := config.CategoryNamesZH[i]; ok {
+				label = zh
+			}
+			cats = append(cats, map[string]any{"id": i, "name": label, "name_en": name})
 		}
 	}
 	ages := make([]map[string]any, 0, len(config.AgeNames))
 	for i := 0; i <= 4; i++ {
-		ages = append(ages, map[string]any{"id": i, "name": config.AgeNames[i]})
+		label := config.AgeNames[i]
+		if zh, ok := config.AgeNamesZH[i]; ok {
+			label = zh
+		}
+		ages = append(ages, map[string]any{"id": i, "name": label, "name_en": config.AgeNames[i]})
 	}
 	fields := make([]map[string]string, 0, len(config.TemplateFields))
 	for _, f := range config.TemplateFields {
@@ -268,6 +278,8 @@ func metaPayload() map[string]any {
 		"ages":             ages,
 		"template_fields":  fields,
 		"default_template": config.DefaultTemplate,
+		"tmdb_template":    config.TMDBTemplate,
+		"poster_sources":   config.PosterSources,
 	}
 }
 
@@ -400,6 +412,70 @@ func (s *Server) handleTestTelegram(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "detail": msg})
+}
+
+// handleTestTMDB validates the key currently on screen against TMDB.
+func (s *Server) handleTestTMDB(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		TMDBKey  string `json:"tmdb_key"`
+		TMDBLang string `json:"tmdb_lang"`
+	}
+	if r.Body != nil {
+		_ = json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&body)
+	}
+	cur := s.cfg.Get()
+	body.TMDBKey = resolveSecret(body.TMDBKey, cur.TMDBKey)
+	if body.TMDBLang == "" {
+		body.TMDBLang = cur.TMDBLang
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	defer cancel()
+	info, err := s.fwd.TestTMDB(ctx, body.TMDBKey, body.TMDBLang)
+	if err != nil {
+		writeJSON(w, http.StatusOK, map[string]any{"ok": false, "error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "detail": info})
+}
+
+// handleTMDBLookup resolves a single title on demand so the operator can see
+// what a release name maps to before enabling enrichment.
+func (s *Server) handleTMDBLookup(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Title  string `json:"title"`
+		IMDbID string `json:"imdb_id"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<16)).Decode(&body); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "malformed request body"})
+		return
+	}
+	if strings.TrimSpace(body.Title) == "" && strings.TrimSpace(body.IMDbID) == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "provide a title or an imdb id"})
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	defer cancel()
+	parsed, entry, err := s.fwd.LookupTMDB(ctx, body.IMDbID, body.Title)
+	resp := map[string]any{
+		"parsed": map[string]any{
+			"title":   parsed.Title,
+			"year":    parsed.Year,
+			"kind":    parsed.Kind,
+			"season":  parsed.Season,
+			"episode": parsed.Episode,
+			"prefix":  parsed.Prefix,
+		},
+	}
+	if err != nil {
+		resp["ok"] = false
+		resp["error"] = err.Error()
+		writeJSON(w, http.StatusOK, resp)
+		return
+	}
+	resp["ok"] = true
+	resp["entry"] = entry
+	writeJSON(w, http.StatusOK, resp)
 }
 
 func (s *Server) handleStart(w http.ResponseWriter, _ *http.Request) {

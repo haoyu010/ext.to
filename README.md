@@ -2,15 +2,16 @@
 
 自动抓取 [ext.to](https://ext.to) 最新发布的种子，按分类与关键词过滤后推送到 Telegram 频道 / 群组 / 论坛话题。
 
-内置 Web 管理面板，可在线调整全部配置、查看转发历史与实时日志。单个 Go 二进制，Docker 一键部署。
+内置中文 Web 管理面板（左侧导航），可在线调整全部配置、查看转发历史与实时日志。单个 Go 二进制，Docker 一键部署。
 
 ## 功能
 
 - **定时抓取最新发布** — 按分类（电影 / 剧集 / 音乐 / 游戏 / 应用 / 图书 / 动漫 / 其他）与时间窗口（24 小时 ~ 1 个月）轮询
 - **关键词过滤** — 包含 / 排除正则表达式，以及最小 / 最大体积限制
 - **完整推送内容** — 标题、分类、体积、文件数、做种数、下载数、发布时间、详情页链接、**magnet 磁力链接**、**原始海报图**
+- **TMDB 匹配** — 用详情页的 IMDb 编号或发布名首行标题匹配 TMDB，补全中文标题、评分、海报，支持「只推送匹配到 TMDB 的种子」
 - **首次运行建立基线** — 不会把整站历史灌进你的频道，只从下一次扫描开始推送新帖
-- **Web 管理面板** — 启动 / 停止 / 立即扫描 / 抓取测试 / Telegram 测试、模板编辑与实时预览效果、转发历史、实时日志
+- **Web 管理面板（中文）** — 左侧导航分页：总览 / 转发记录 / 运行日志 / 抓取来源 / TMDB 匹配 / Telegram 推送 / 面板设置
 - **凭证打码** — 接口不会回传明文 Bot Token 与 Cookie
 - **无需登录 ext.to** — 复用浏览器已通过 Cloudflare 校验的 `cf_clearance` Cookie
 
@@ -35,7 +36,7 @@ docker compose up -d
 3. 拿到 **Chat ID**：
    - 频道：转发任意一条频道消息给 [@userinfobot](https://t.me/userinfobot)，或把频道设为公开后用 `@频道名`
    - 群组：直接填负数 ID，形如 `-1001234567890`
-4. 面板 → **Settings** → 填入 Token 与 Chat ID → 点 **✈ Send test message** 验证
+4. 面板 → **Telegram 推送** → 填入 Token 与 Chat ID → 点右上角 **测试 Telegram** 验证
 
 ### 3. 配置 ext.to 访问
 
@@ -45,16 +46,16 @@ ext.to 由 Cloudflare 保护，机房 IP 会被拦截。本项目复用你本机
 2. 按 `F12` → **Application / 应用程序** → **Cookies** → `https://ext.to`
 3. 复制 **`cf_clearance`** 的 **Value**（只复制值，不要整行）
 4. 顺手复制 **`PHPSESSID`** 的 Value（可选，但建议填）
-5. 面板 → **Settings → ext.to access**，粘贴进去
+5. 面板 → **抓取来源 → 访问凭据**，粘贴进去
 6. **User-Agent 保持与你浏览器一致** —— Cloudflare 把 Cookie 同时绑定 IP 和 UA，UA 不匹配会立刻失效
 
 > `cf_clearance` 有效期通常为一年，但只要出口公网 IP 变了（运营商重播、换网络、开代理）就需要重新获取。
 
 ### 4. 开始转发
 
-1. 面板 → **🔍 Test scrape**，确认能读到数据、过滤条件符合预期
-2. 选好分类与时间窗口 → **💾 Save settings**
-3. 勾选 **Monitoring enabled** 再保存，或直接点 **▶ Start monitoring**
+1. 面板 → **抓取来源** → 点右上角 **测试抓取**，确认能读到数据、过滤条件符合预期
+2. 选好分类与时间窗口 → **保存设置**
+3. 勾选 **开启监听** 再保存，或回到总览直接点 **启动监听**
 
 首次扫描只会建立基线（不推送），这是刻意设计 —— 否则频道会被几百条历史帖子刷屏。
 
@@ -75,6 +76,24 @@ ext.to 由 Cloudflare 保护，机房 IP 会被拦截。本项目复用你本机
 | `silent` | 静默推送，不响铃 |
 | `disable_web_preview` | 关闭链接预览，让帖子更紧凑 |
 | `proxy` | HTTP 代理，仅在直连不通或需固定出口 IP 时使用 |
+| `tmdb_key` | TMDB API Key（v3 密钥或 v4 令牌）。留空则完全不启用 TMDB |
+| `tmdb_lang` | TMDB 语言，默认 `zh-CN`，返回中文标题与简介 |
+| `tmdb_only` | 只推送匹配到 TMDB 的种子，未匹配的计入「跳过」而不是失败 |
+| `poster_source` | 海报来源：`auto`（优先 TMDB，失败回退种子站）/ `tmdb` / `tracker` |
+
+### TMDB 匹配
+
+在面板 **TMDB 匹配** 页面填入 API Key（免费申请：<https://www.themoviedb.org/settings/api>）即可启用。匹配策略：
+
+1. **优先用编号**：ext.to 详情页会给出 `IMDb link`，转发器把它通过 TMDB 的 `/find/{id}` 转成 TMDB 条目。编号是权威来源，命中后不再校验标题。
+2. **其次按标题**：没有编号时，把发布名交给解析器取出标题、年份、类型，再调 `/search/movie` 或 `/search/tv`。**只有标题完全一致（忽略大小写与标点）才接受**，避免把 `Ring Ring` 错配成别的片子。
+3. **类型判定**：优先读发布名开头的 `[剧集]` / `[电影]` 前缀；没有前缀则由 `S01E02` 这类集数标记判定为剧集，带年份的判定为电影。
+
+标题解析只读取**发布名本身**，不会读取简介、分享、字幕、体积、直达链接、标签等正文内容 —— 那些字段是噪声，只会让模糊匹配变差。
+
+匹配成功后可用 `{tmdb_title}`、`{tmdb_rating}` 等变量；未匹配到时会自动回退为种子标题，不会留下空占位。TMDB 不可达时只记录日志，推送照常进行。
+
+面板里的 **标题解析测试** 可以粘贴任意发布名，查看解析结果与匹配到的条目，用来验证规则是否符合预期。
 
 ### 推送模板
 
@@ -83,6 +102,11 @@ ext.to 由 Cloudflare 保护，机房 IP 会被拦截。本项目复用你本机
 | 变量 | 内容 |
 | --- | --- |
 | `{title}` | 种子标题 |
+| `{tmdb_title}` | TMDB 匹配标题，未匹配时为种子标题 |
+| `{tmdb_original_title}` | TMDB 原始语言标题 |
+| `{tmdb_year}` `{tmdb_rating}` `{tmdb_votes}` | 年份、评分、评分人数 |
+| `{tmdb_url}` `{tmdb_id}` `{tmdb_type}` | TMDB 链接、编号、类型（movie / tv） |
+| `{tmdb_overview}` | TMDB 简介，按 Telegram 限制截断为 320 字 |
 | `{category}` | 分类路径，如 `Movies - Highres Movies` |
 | `{size}` `{files}` | 体积、文件数 |
 | `{seeds}` `{leeches}` | 做种数、下载数 |
@@ -104,6 +128,20 @@ ext.to 由 Cloudflare 保护，机房 IP 会被拦截。本项目复用你本机
 ```
 
 如果标题里包含非法 HTML 标签，转发器会自动降级为纯文本重发一次，不会因为单条标题导致整个流程中断。
+
+TMDB 模板（面板里点 **TMDB 模板** 一键套用）：
+
+```html
+<b>{tmdb_title}</b> ({tmdb_year})
+⭐ {tmdb_rating}/10 · {tmdb_votes} votes
+
+📁 {category}
+💾 {size} · 📄 {files} files
+🌱 {seeds} seeders · {leeches} leechers
+🕐 {age}
+
+<a href="{tmdb_url}">TMDB</a> · <a href="{url}">ext.to</a>
+```
 
 ## 本地开发
 
@@ -127,7 +165,9 @@ LIVE_COOKIE_FILE=./cookie.json go test ./internal/scrape/ -run TestLiveMagnetAnd
 ```
 cmd/server/          程序入口：启动 HTTP 服务与轮询循环
 internal/config/     配置读写、校验、打码，以及推送模板渲染
+internal/media/      发布名解析：标题去噪、年份、季集、[剧集] / [电影] 前缀
 internal/scrape/     ext.to 抓取：列表解析、magnet 签名、海报提取
+internal/tmdb/       TMDB 匹配：IMDb 编号换条目、标题精确搜索
 internal/telegram/   Bot API 最小实现（sendMessage / sendPhoto / getMe）
 internal/forwarder/  调度核心：过滤、去重、推送、运行报告
 internal/store/      转发历史持久化（JSON）
@@ -146,19 +186,29 @@ deploy/              部署用 docker-compose.yml
 **列表页 HTML 顺序不固定。** 标题链接的 `href` 出现在 `class` 属性之前，用正则匹配容易失效，所以解析基于
 `golang.org/x/net/html` 构建 DOM 树，测试用例直接使用真实页面快照（`internal/scrape/testdata`）。
 
+**详情页只请求一次。** 海报、IMDb 编号和 magnet 的签名 token 都在同一个详情页上，而 magnet 的 `pageToken`
+绑定到具体的一次页面加载。转发器因此一次性取回页面，再从同一份 body 里分别解析三项数据，避免重复请求，
+也保证 token 与正在推送的种子严格对应。
+
 ## 常见问题
 
 **日志里出现 `cloudflare challenge returned`**
 Cookie 失效了：可能过期、出口 IP 变了，或 User-Agent 与获取 Cookie 时不一致。回到「配置 ext.to 访问」重新获取。
 
 **Test scrape 正常，但频道收不到消息**
-依次检查：Bot 是否已加入目标频道 / 群组并具有发言权限、Chat ID 是否为正负号正确、论坛群组是否填了正确的 topic ID。用 **✈ Send test message** 能立刻区分是 Bot 配置问题还是抓取问题。
+依次检查：Bot 是否已加入目标频道 / 群组并具有发言权限、Chat ID 是否为正负号正确、论坛群组是否填了正确的 topic ID。用 **测试 Telegram** 能立刻区分是 Bot 配置问题还是抓取问题。
+
+**勾选了「只推送匹配到 TMDB 的种子」，但一条都没推送**
+先点 **测试 TMDB** 确认 Key 有效；再到 **标题解析测试** 粘贴实际报错的发布名，看是否解析出了正确的标题与年份。若发布名本身不含年份（例如部分音乐、体育资源），标题搜索的命中率会明显下降，此时可改用 `{tmdb_...}` 变量之外的方式，或取消该勾选。日志里会记录 `skipped ... no tmdb match`。
+
+**频道里的标题是其他语言**
+`tmdb_lang` 决定返回哪种语言的标题与简介，默认 `zh-CN`。改成 `en-US` 可拿到英文原名，`{tmdb_original_title}` 则始终是原始语言标题。
 
 **推送太频繁或太少**
 调大 `interval_seconds` 降低频率；想收窄内容则用 `include` / `exclude` 或体积范围。`batch_size` 只限制单次扫描上限，不改变实际抓到的新帖数量。
 
 **想重新开始（清空历史）**
-面板底部 **Clear history**。清空后下一次扫描会重新建立基线，因此不会补推积压内容。
+**转发记录** 页面右上角 **清空记录**。清空后下一次扫描会重新建立基线，因此不会补推积压内容。
 
 **忘记面板密码**
 删除数据目录里的 `config.json`（或其中的 `admin_user` / `admin_password`），重启容器即恢复 `admin` / `admin` —— 注意这会一并重置其它设置。

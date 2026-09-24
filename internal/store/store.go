@@ -25,6 +25,15 @@ type Record struct {
 	Sent      bool      `json:"sent"`
 	SentAt    time.Time `json:"sent_at,omitempty"`
 	Error     string    `json:"error,omitempty"`
+
+	// TMDB enrichment, recorded so the history view can show what a post was
+	// matched to and why a torrent was skipped.
+	TMDBID      int     `json:"tmdb_id,omitempty"`
+	TMDBType    string  `json:"tmdb_type,omitempty"`
+	TMDBTitle   string  `json:"tmdb_title,omitempty"`
+	TMDBYear    int     `json:"tmdb_year,omitempty"`
+	TMDBRating  float64 `json:"tmdb_rating,omitempty"`
+	TMDBMatched bool    `json:"tmdb_matched,omitempty"`
 }
 
 // Stats summarises store contents for the web UI.
@@ -119,8 +128,28 @@ func (s *Store) Put(r Record) {
 	s.dirty = true
 }
 
+// TMDBInfo describes a resolved TMDB match. It is a plain value so the store
+// stays free of any dependency on the TMDB client.
+type TMDBInfo struct {
+	ID     int
+	Type   string
+	Title  string
+	Year   int
+	Rating float64
+}
+
 // MarkSent flags a record as forwarded.
 func (s *Store) MarkSent(id int, magnet string) {
+	s.markSent(id, magnet, nil)
+}
+
+// MarkSentWithTMDB flags a record as forwarded and stores the TMDB match that
+// was used for its caption, so the history view can show the link.
+func (s *Store) MarkSentWithTMDB(id int, magnet string, info TMDBInfo) {
+	s.markSent(id, magnet, &info)
+}
+
+func (s *Store) markSent(id int, magnet string, info *TMDBInfo) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	k := key(id)
@@ -133,6 +162,14 @@ func (s *Store) MarkSent(id int, magnet string) {
 	r.Error = ""
 	if magnet != "" {
 		r.Magnet = magnet
+	}
+	if info != nil && info.ID != 0 {
+		r.TMDBID = info.ID
+		r.TMDBType = info.Type
+		r.TMDBTitle = info.Title
+		r.TMDBYear = info.Year
+		r.TMDBRating = info.Rating
+		r.TMDBMatched = true
 	}
 	s.records[k] = r
 	s.dirty = true

@@ -15,9 +15,11 @@ import (
 	"time"
 
 	"github.com/haoyu010/ext.to/internal/config"
+	"github.com/haoyu010/ext.to/internal/media"
 	"github.com/haoyu010/ext.to/internal/scrape"
 	"github.com/haoyu010/ext.to/internal/store"
 	"github.com/haoyu010/ext.to/internal/telegram"
+	"github.com/haoyu010/ext.to/internal/tmdb"
 )
 
 // Forwarder scans ext.to and publishes new torrents.
@@ -47,6 +49,11 @@ type RunReport struct {
 	Baseline  bool      `json:"baseline"`
 	Errors    []string  `json:"errors,omitempty"`
 }
+
+// errNoMatch marks a torrent that was intentionally not forwarded because
+// TMDBOnly is enabled and no TMDB entry could be found. It is a skip, not a
+// delivery failure, so it must not inflate the failure count.
+var errNoMatch = errors.New("no tmdb match")
 
 // New creates a forwarder.
 func New(cfg *config.Store, state *store.Store, logger *log.Logger) *Forwarder {
@@ -214,6 +221,7 @@ func (f *Forwarder) run(ctx context.Context, rep *RunReport) error {
 	if err != nil {
 		return err
 	}
+	movies := tmdb.New(settings.TMDBKey, settings.TMDBLang)
 
 	for i, it := range candidates {
 		if err := ctx.Err(); err != nil {
@@ -223,7 +231,13 @@ func (f *Forwarder) run(ctx context.Context, rep *RunReport) error {
 			// Keep well under Telegram's per-chat rate limit.
 			time.Sleep(1200 * time.Millisecond)
 		}
-		if err := f.publish(ctx, client, tg, settings, it, threadID); err != nil {
+		if err := f.publish(ctx, client, tg, movies, settings, it, threadID); err != nil {
+			if errors.Is(err, errNoMatch) {
+				// Filtered out on purpose; neither sent nor a failure.
+				rep.Skipped++
+				f.log.Printf("forwarder: skipped %d (%s): no tmdb match", it.ID, it.Title)
+				continue
+			}
 			rep.Failed++
 			rep.Errors = append(rep.Errors, fmt.Sprintf("%d: %v", it.ID, err))
 			f.state.MarkError(it.ID, err.Error())
@@ -239,13 +253,37 @@ func (f *Forwarder) run(ctx context.Context, rep *RunReport) error {
 	return nil
 }
 
-// publish resolves extras (magnet, poster) and sends one torrent.
+// publish resolves extras (TMDB match, magnet, poster) and sends one torrent.
 func (f *Forwarder) publish(ctx context.Context, client *scrape.Client, tg *telegram.Client,
-	settings config.Settings, it scrape.Item, threadID int) error {
+	movies *tmdb.Client, settings config.Settings, it scrape.Item, threadID int) error {
+
+	// The detail page carries the poster, the IMDb id and the per-page magnet
+	// token, so one request serves all three.
+	needDetail := settings.WithMagnet || settings.WithPoster || movies.Configured()
+	var detail scrape.Detail
+	var page []byte
+	if needDetail {
+		var err error
+		page, err = client.FetchDetailPage(ctx, it)
+		if err != nil {
+			// Losing the detail page degrades the post rather than failing it.
+			f.log.Printf("forwarder: detail page unavailable for %d: %v", it.ID, err)
+			page = nil
+		} else {
+			detail = scrape.ParseDetail(page)
+		}
+	}
+
+	entry, matched := f.matchTMDB(ctx, movies, settings, it, detail)
+	if !matched && settings.TMDBOnly {
+		// The release has no TMDB entry, which is a deliberate skip rather
+		// than a delivery failure, so the run report stays meaningful.
+		return errNoMatch
+	}
 
 	var magnet string
-	if settings.WithMagnet {
-		m, err := client.FetchMagnet(ctx, it)
+	if settings.WithMagnet && page != nil {
+		m, err := client.MagnetFromDetail(ctx, it, page)
 		if err != nil {
 			// A missing magnet should not block the post.
 			f.log.Printf("forwarder: magnet unavailable for %d: %v", it.ID, err)
@@ -254,7 +292,94 @@ func (f *Forwarder) publish(ctx context.Context, client *scrape.Client, tg *tele
 		}
 	}
 
-	caption := config.Render(settings.Template, config.TemplateData{
+	caption := config.Render(settings.Template, templateData(it, entry, magnet))
+
+	photo := f.loadPoster(ctx, client, settings, it, detail, entry)
+
+	_, err := tg.Send(ctx, telegram.Post{
+		ChatID:            settings.ChatID,
+		ThreadID:          threadID,
+		Caption:           caption,
+		Silent:            settings.Silent,
+		DisableWebPreview: settings.DisableWeb,
+	}, photo, posterName(it))
+	if err != nil {
+		return err
+	}
+	f.state.MarkSentWithTMDB(it.ID, magnet, store.TMDBInfo{
+		ID:     entry.ID,
+		Type:   entry.Type,
+		Title:  entry.Title,
+		Year:   entry.Year,
+		Rating: entry.Rating,
+	})
+	return nil
+}
+
+// matchTMDB resolves the release against TMDB. A nil or unconfigured client,
+// or any lookup failure, simply yields no match: TMDB is an enrichment, and
+// the forwarder must keep working when the API is unreachable.
+func (f *Forwarder) matchTMDB(ctx context.Context, movies *tmdb.Client, settings config.Settings,
+	it scrape.Item, detail scrape.Detail) (tmdb.Entry, bool) {
+
+	if !movies.Configured() {
+		return tmdb.Entry{}, false
+	}
+	// The tracked title is the release name, which carries codec noise. The
+	// detail page's canonical title is a much stronger basis for a search, so
+	// pass it as the name when available and keep the release name otherwise.
+	name := detail.Title
+	if name == "" {
+		name = it.Title
+	}
+	entry, err := movies.Resolve(ctx, detail.IMDbID, name)
+	if err != nil {
+		if !errors.Is(err, tmdb.ErrNoMatch) && !errors.Is(err, tmdb.ErrNotConfigured) {
+			f.log.Printf("forwarder: tmdb lookup failed for %d: %v", it.ID, err)
+		}
+		return tmdb.Entry{}, false
+	}
+	f.log.Printf("forwarder: tmdb match for %d -> %s (%s %d) via %s",
+		it.ID, entry.Title, entry.Type, entry.Year, entry.MatchedBy)
+	return entry, true
+}
+
+// loadPoster returns the poster bytes to upload, honouring PosterSource.
+func (f *Forwarder) loadPoster(ctx context.Context, client *scrape.Client, settings config.Settings,
+	it scrape.Item, detail scrape.Detail, entry tmdb.Entry) []byte {
+
+	if !settings.WithPoster {
+		return nil
+	}
+	fromTMDB := settings.PosterSource != config.PosterSourceTracker
+	fromTracker := settings.PosterSource != config.PosterSourceTMDB
+
+	if fromTMDB && entry.ID != 0 {
+		if url := entry.PosterURL(500); url != "" {
+			if b, err := client.DownloadImage(ctx, url); err == nil {
+				return b
+			} else {
+				f.log.Printf("forwarder: tmdb poster download failed for %d: %v", it.ID, err)
+			}
+		}
+	}
+	if !fromTracker {
+		return nil
+	}
+	if detail.PosterURL == "" {
+		return nil
+	}
+	if b, err := client.DownloadImage(ctx, detail.PosterURL); err != nil {
+		f.log.Printf("forwarder: poster download failed for %d: %v", it.ID, err)
+		return nil
+	} else {
+		return b
+	}
+}
+
+// templateData builds the caption value set for one torrent.
+func templateData(it scrape.Item, entry tmdb.Entry, magnet string) config.TemplateData {
+	d := config.TemplateData{
 		Title:    it.Title,
 		Category: it.Category,
 		Size:     it.Size,
@@ -267,34 +392,19 @@ func (f *Forwarder) publish(ctx context.Context, client *scrape.Client, tg *tele
 		URL:      it.URL,
 		Magnet:   magnet,
 		ID:       it.ID,
-	})
-
-	var photo []byte
-	if settings.WithPoster {
-		if p, err := client.FetchPoster(ctx, it); err != nil {
-			f.log.Printf("forwarder: poster lookup failed for %d: %v", it.ID, err)
-		} else if p != "" {
-			b, err := client.DownloadImage(ctx, p)
-			if err != nil {
-				f.log.Printf("forwarder: poster download failed for %d: %v", it.ID, err)
-			} else {
-				photo = b
-			}
-		}
 	}
-
-	_, err := tg.Send(ctx, telegram.Post{
-		ChatID:            settings.ChatID,
-		ThreadID:          threadID,
-		Caption:           caption,
-		Silent:            settings.Silent,
-		DisableWebPreview: settings.DisableWeb,
-	}, photo, posterName(it))
-	if err != nil {
-		return err
+	if entry.ID != 0 {
+		d.TMDBTitle = entry.Title
+		d.TMDBOriginalTitle = entry.OriginalTitle
+		d.TMDBYear = entry.Year
+		d.TMDBRating = entry.Rating
+		d.TMDBVotes = entry.VoteCount
+		d.TMDBURL = entry.URL()
+		d.TMDBID = entry.ID
+		d.TMDBType = entry.Type
+		d.TMDBOverview = entry.Overview
 	}
-	f.state.MarkSent(it.ID, magnet)
-	return nil
+	return d
 }
 
 func recordFor(it scrape.Item, sent bool) store.Record {
@@ -397,6 +507,45 @@ func (f *Forwarder) ForceCheck(ctx context.Context) (RunReport, error) {
 	}
 	f.state.SetLastError("")
 	return rep, nil
+}
+
+// TestTMDB verifies that the API key works and reports the account's
+// configured language, so the operator gets confirmation without waiting for
+// a scan.
+func (f *Forwarder) TestTMDB(ctx context.Context, key, lang string) (string, error) {
+	client := tmdb.New(key, lang)
+	if !client.Configured() {
+		return "", tmdb.ErrNotConfigured
+	}
+	// A well-known title exercises both the key and the language setting.
+	entry, err := client.Resolve(ctx, "tt1375666", "Inception.2010.1080p.BluRay")
+	if err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("Resolved Inception to %q (%s %d) with language %s",
+		entry.Title, entry.Type, entry.Year, langOrDefault(lang)), nil
+}
+
+// LookupTMDB resolves one title on demand, returning the parsed release name
+// alongside the match so the dashboard can show how the name was read.
+func (f *Forwarder) LookupTMDB(ctx context.Context, imdbID, title string) (media.Result, tmdb.Entry, error) {
+	settings := f.cfg.Get()
+	client := tmdb.New(settings.TMDBKey, settings.TMDBLang)
+	if !client.Configured() {
+		return media.Parse(title), tmdb.Entry{}, tmdb.ErrNotConfigured
+	}
+	entry, err := client.Resolve(ctx, imdbID, title)
+	if err != nil {
+		return media.Parse(title), tmdb.Entry{}, err
+	}
+	return media.Parse(title), entry, nil
+}
+
+func langOrDefault(lang string) string {
+	if strings.TrimSpace(lang) == "" {
+		return "zh-CN"
+	}
+	return lang
 }
 
 // TestTelegram verifies the bot token and chat id.

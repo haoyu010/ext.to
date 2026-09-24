@@ -16,6 +16,7 @@ import (
 	"github.com/haoyu010/ext.to/internal/scrape"
 	"github.com/haoyu010/ext.to/internal/store"
 	"github.com/haoyu010/ext.to/internal/telegram"
+	"github.com/haoyu010/ext.to/internal/tmdb"
 )
 
 // capturedSend records one request received by the mock Telegram server.
@@ -173,7 +174,7 @@ func TestPublishSendsPhotoWithCaptionAndMagnet(t *testing.T) {
 		Category: "Movies - Highres Movies",
 	}
 	if err := f.publish(context.Background(), client, telegram.New(settings.BotToken),
-		settings, item, 0); err != nil {
+		tmdb.New("", settings.TMDBLang), settings, item, 0); err != nil {
 		t.Fatalf("publish: %v", err)
 	}
 
@@ -241,7 +242,7 @@ func TestPublishFallsBackToPlainText(t *testing.T) {
 
 	item := scrape.Item{ID: 7, Slug: "x-7", Title: "Bad <tag>", URL: site.URL + "/torrent-page/"}
 	if err := f.publish(context.Background(), client, telegram.New(settings.BotToken),
-		settings, item, 0); err != nil {
+		tmdb.New("", settings.TMDBLang), settings, item, 0); err != nil {
 		t.Fatalf("publish should retry without markup: %v", err)
 	}
 	if len(*sent) < 2 {
@@ -278,7 +279,7 @@ func TestPublishWithoutMagnetStillPosts(t *testing.T) {
 
 	item := scrape.Item{ID: 11, Slug: "y-11", Title: "No Magnet", URL: site.URL + "/y-11/"}
 	if err := f.publish(context.Background(), client, telegram.New(settings.BotToken),
-		settings, item, 0); err != nil {
+		tmdb.New("", settings.TMDBLang), settings, item, 0); err != nil {
 		t.Fatalf("publish should succeed without a magnet: %v", err)
 	}
 	if len(*sent) != 1 {

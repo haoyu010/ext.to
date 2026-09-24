@@ -1,514 +1,820 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="zh-CN">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>ext.to → Telegram Forwarder</title>
+<title>EXT 转发面板</title>
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📡</text></svg>">
 <style>
   :root {
-    color-scheme: dark;
-    --bg: #0b0f14;
-    --panel: #151d29;
-    --panel-2: #1a2431;
-    --line: #243043;
-    --line-soft: #1d2735;
-    --text: #e6edf6;
-    --muted: #8b9bb0;
-    --dim: #5d6b7e;
-    --accent: #3d9df6;
-    --accent-dim: #1f6fbc;
-    --ok: #35c98a;
-    --warn: #f0b429;
-    --err: #f2555a;
+    color-scheme: light;
+    --bg: #f6f7f9;
+    --panel: #ffffff;
+    --panel-2: #fbfbfd;
+    --line: #e7e9ee;
+    --line-soft: #eef0f4;
+    --text: #1c1f26;
+    --muted: #6b7280;
+    --dim: #9aa1ad;
+    --accent: #5b5bd6;
+    --accent-soft: #eef0ff;
+    --accent-hover: #4d4dc4;
+    --ok: #128a5b;
+    --ok-soft: #e6f6ee;
+    --warn: #b4720a;
+    --warn-soft: #fdf3e2;
+    --err: #c2352f;
+    --err-soft: #fdeceb;
+    --info: #0b7fa8;
+    --info-soft: #e6f4f9;
     --radius: 12px;
     --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+    --sans: "PingFang SC", "Microsoft YaHei", system-ui, -apple-system,
+            "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
   }
   * { box-sizing: border-box; }
+  /* Author rules that set `display` (flex/grid) outrank the UA stylesheet's
+     [hidden] { display: none }, so hidden elements need this explicit rule
+     or the `hidden` attribute silently stops working. */
+  [hidden] { display: none !important; }
   html, body { margin: 0; padding: 0; }
   body {
-    background:
-      radial-gradient(1100px 600px at 12% -10%, #16283c 0%, transparent 60%),
-      radial-gradient(900px 500px at 100% 0%, #1b1d3a 0%, transparent 55%),
-      var(--bg);
+    background: var(--bg);
     color: var(--text);
-    font: 15px/1.55 system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    font: 14px/1.6 var(--sans);
     min-height: 100vh;
     -webkit-font-smoothing: antialiased;
   }
   a { color: var(--accent); text-decoration: none; }
   a:hover { text-decoration: underline; }
-  .wrap { max-width: 1180px; margin: 0 auto; padding: 22px 20px 72px; }
 
-  header.top { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; margin-bottom: 20px; }
-  .brand { display: flex; align-items: center; gap: 11px; }
-  .brand .mark {
-    width: 40px; height: 40px; border-radius: 11px; flex: 0 0 auto;
-    display: grid; place-items: center; font-size: 20px;
-    background: linear-gradient(140deg, #2b7fd4, #7b5cff);
-    box-shadow: 0 6px 20px -8px #3d9df6;
+  /* ============================== 登录页 ============================== */
+  .login-wrap { min-height: 100vh; display: grid; place-items: center; padding: 22px; }
+  .login {
+    width: 100%; max-width: 380px; background: var(--panel);
+    border: 1px solid var(--line); border-radius: 16px; padding: 28px 26px;
+    box-shadow: 0 20px 45px -30px #1b20301f;
   }
-  .brand h1 { margin: 0; font-size: 19px; letter-spacing: .2px; }
-  .brand .sub { margin: 1px 0 0; color: var(--muted); font-size: 12.5px; }
-  .spacer { flex: 1 1 auto; }
-  .pill {
-    display: inline-flex; align-items: center; gap: 7px;
-    padding: 6px 12px; border-radius: 999px; font-size: 12.5px;
-    background: var(--panel); border: 1px solid var(--line); color: var(--muted);
-    white-space: nowrap;
+  .login .mark {
+    width: 48px; height: 48px; border-radius: 14px; margin: 0 auto 14px;
+    display: grid; place-items: center; font-size: 24px;
+    background: var(--accent-soft); color: var(--accent);
   }
-  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--dim); flex: 0 0 auto; }
-  .dot.on { background: var(--ok); box-shadow: 0 0 0 3px #35c98a2b; animation: pulse 2.4s infinite; }
-  .dot.off { background: var(--dim); }
-  @keyframes pulse { 50% { opacity: .45; } }
+  .login h2 { margin: 0 0 6px; text-align: center; font-size: 19px; }
+  .login p.s { margin: 0 0 22px; text-align: center; color: var(--muted); font-size: 13px; }
 
-  .grid { display: grid; gap: 16px; }
-  .cols-4 { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+  /* ============================== 主结构 ============================== */
+  .shell { display: flex; min-height: 100vh; }
+
+  aside.side {
+    width: 232px; flex: 0 0 232px; background: var(--panel);
+    border-right: 1px solid var(--line);
+    display: flex; flex-direction: column;
+    position: sticky; top: 0; height: 100vh;
+  }
+  .side .brand {
+    display: flex; align-items: center; gap: 11px;
+    padding: 20px 18px 18px;
+  }
+  .side .brand .mark {
+    width: 38px; height: 38px; border-radius: 11px; flex: 0 0 auto;
+    display: grid; place-items: center; font-size: 19px;
+    background: var(--accent-soft); color: var(--accent);
+  }
+  .side .brand h1 { margin: 0; font-size: 15.5px; font-weight: 650; letter-spacing: -0.1px; }
+  .side .brand p { margin: 1px 0 0; font-size: 12px; color: var(--dim); }
+
+  nav.menu { padding: 4px 12px; flex: 1; overflow-y: auto; }
+  nav.menu button {
+    width: 100%; display: flex; align-items: center; gap: 10px;
+    appearance: none; border: 0; background: none; cursor: pointer;
+    padding: 9px 11px; margin-bottom: 2px; border-radius: 9px;
+    font: inherit; font-size: 13.5px; color: var(--muted); text-align: left;
+    transition: background .13s, color .13s;
+  }
+  nav.menu button svg { width: 17px; height: 17px; flex: 0 0 auto; stroke-width: 1.8; }
+  nav.menu button:hover { background: var(--line-soft); color: var(--text); }
+  nav.menu button.active { background: var(--accent-soft); color: var(--accent); font-weight: 600; }
+  nav.menu .sect {
+    font-size: 11px; text-transform: uppercase; letter-spacing: .06em;
+    color: var(--dim); padding: 14px 11px 6px;
+  }
+  .side .foot { padding: 12px; border-top: 1px solid var(--line-soft); }
+  .side .foot .who { font-size: 12px; color: var(--dim); padding: 0 4px 8px; }
+
+  main.body { flex: 1; min-width: 0; padding: 22px 26px 64px; }
+  .pagehead { display: flex; align-items: flex-start; gap: 14px; margin-bottom: 18px; }
+  .pagehead h2 { margin: 0; font-size: 20px; font-weight: 650; letter-spacing: -0.2px; }
+  .pagehead p { margin: 3px 0 0; color: var(--muted); font-size: 13px; }
+  .pagehead .grow { flex: 1; }
+
+  /* ============================== 卡片 ============================== */
+  .grid { display: grid; gap: 14px; }
+  .cols-5 { grid-template-columns: repeat(5, minmax(0, 1fr)); }
+  .cols-3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
   .cols-2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  @media (max-width: 900px) { .cols-4, .cols-2 { grid-template-columns: 1fr 1fr; } }
-  @media (max-width: 620px) { .cols-4, .cols-2 { grid-template-columns: 1fr; } }
+  @media (max-width: 1180px) { .cols-5 { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+  @media (max-width: 1000px) {
+    aside.side { width: 76px; flex: 0 0 76px; }
+    .side .brand p, .side .brand h1, nav.menu button span, nav.menu .sect, .side .foot .who { display: none; }
+    .cols-3, .cols-2 { grid-template-columns: 1fr; }
+  }
+  @media (max-width: 760px) {
+    .cols-5 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    main.body { padding: 16px 14px 48px; }
+  }
+
+  .stat {
+    background: var(--panel); border: 1px solid var(--line);
+    border-radius: var(--radius); padding: 16px;
+  }
+  .stat .ico {
+    width: 34px; height: 34px; border-radius: 9px; display: grid; place-items: center;
+    margin-bottom: 14px; color: #fff;
+  }
+  .stat .ico svg { width: 18px; height: 18px; stroke-width: 2; }
+  .stat .ico.ok { background: #12a06a; }
+  .stat .ico.info { background: #1487b8; }
+  .stat .ico.warn { background: #d99413; }
+  .stat .ico.off { background: #a8aeb9; }
+  .stat .lbl { font-size: 12.5px; color: var(--muted); margin-bottom: 6px; }
+  .stat .val { font-size: 21px; font-weight: 650; letter-spacing: -0.3px; }
+  .stat .val.sm { font-size: 16px; }
+  .stat .sub { font-size: 12px; color: var(--dim); margin-top: 5px; }
 
   .card {
-    background: linear-gradient(180deg, var(--panel), var(--panel-2));
-    border: 1px solid var(--line); border-radius: var(--radius);
-    padding: 16px 17px;
+    background: var(--panel); border: 1px solid var(--line);
+    border-radius: var(--radius); padding: 18px; margin-bottom: 14px;
   }
-  .card h2 { margin: 0 0 3px; font-size: 14px; letter-spacing: .3px; text-transform: uppercase; color: var(--muted); }
-  .card .hint { margin: 0 0 14px; color: var(--dim); font-size: 12.5px; }
-  .stat .n { font-size: 27px; font-weight: 650; letter-spacing: -.4px; margin: 7px 0 1px; }
-  .stat .l { color: var(--muted); font-size: 12.5px; }
-  .stat.warn .n { color: var(--warn); }
-  .stat.err .n { color: var(--err); }
-
-  nav.tabs { display: flex; gap: 4px; margin: 22px 0 16px; flex-wrap: wrap; border-bottom: 1px solid var(--line-soft); }
-  nav.tabs button {
-    appearance: none; background: none; border: 0; cursor: pointer;
-    color: var(--muted); font: inherit; font-size: 14px;
-    padding: 9px 14px; border-radius: 9px 9px 0 0;
-    border-bottom: 2px solid transparent; margin-bottom: -1px;
+  .card > h3 {
+    margin: 0 0 3px; font-size: 14.5px; font-weight: 650;
   }
-  nav.tabs button:hover { color: var(--text); background: #ffffff08; }
-  nav.tabs button.active { color: var(--text); border-bottom-color: var(--accent); font-weight: 600; }
-  .tabpane { display: none; }
-  .tabpane.active { display: block; animation: fade .18s ease; }
-  @keyframes fade { from { opacity: 0; transform: translateY(3px); } }
+  .card > p.hint { margin: 0 0 16px; color: var(--muted); font-size: 12.5px; }
+  .card .cardico { color: var(--accent); opacity: .85; }
+  .cardhead { display: flex; align-items: center; gap: 10px; margin-bottom: 3px; }
+  .cardhead h3 { margin: 0; font-size: 14.5px; font-weight: 650; }
+  .cardhead .grow { flex: 1; }
 
-  label.field { display: block; margin-bottom: 13px; }
-  label.field > span.lbl { display: block; margin-bottom: 5px; font-size: 13px; font-weight: 550; }
-  label.field > span.help { display: block; margin-top: 5px; font-size: 12px; color: var(--dim); }
+  /* ============================== 表单 ============================== */
+  label.field { display: block; margin-bottom: 14px; }
+  label.field > span.lbl { display: block; margin-bottom: 6px; font-size: 12.5px; font-weight: 550; color: #3c4250; }
+  label.field > span.help { display: block; margin-top: 5px; font-size: 11.5px; color: var(--dim); }
   input[type=text], input[type=password], input[type=number], select, textarea {
-    width: 100%; padding: 9px 11px; font: inherit; font-size: 14px;
-    background: #0d131c; color: var(--text);
+    width: 100%; padding: 9px 11px; font: inherit; font-size: 13.5px;
+    color: var(--text); background: var(--panel-2);
     border: 1px solid var(--line); border-radius: 9px; outline: none;
+    transition: border-color .13s, box-shadow .13s;
   }
-  input:focus, select:focus, textarea:focus { border-color: var(--accent-dim); box-shadow: 0 0 0 3px #3d9df61f; }
-  textarea { font-family: var(--mono); font-size: 13px; resize: vertical; min-height: 132px; }
-  select[multiple] { min-height: 128px; padding: 5px; }
+  input:focus, select:focus, textarea:focus {
+    border-color: var(--accent);
+    box-shadow: 0 0 0 3px #5b5bd61f;
+  }
+  textarea { resize: vertical; min-height: 132px; font-family: var(--mono); font-size: 12.5px; line-height: 1.65; }
+  select[multiple] { min-height: 148px; }
   select[multiple] option { padding: 4px 7px; border-radius: 6px; }
-  .row { display: flex; gap: 12px; flex-wrap: wrap; }
-  .row > * { flex: 1 1 190px; min-width: 0; }
-  .check { display: flex; align-items: flex-start; gap: 9px; margin-bottom: 10px; cursor: pointer; }
+  .row { display: flex; gap: 14px; flex-wrap: wrap; }
+  .row > * { flex: 1 1 210px; min-width: 0; }
+  .check { display: flex; align-items: flex-start; gap: 9px; margin-bottom: 11px; cursor: pointer; }
   .check input { margin: 3px 0 0; width: 16px; height: 16px; accent-color: var(--accent); flex: 0 0 auto; }
-  .check .t { font-size: 13.5px; }
-  .check .d { font-size: 12px; color: var(--dim); }
+  .check .t { font-size: 13px; }
+  .check .t b { display: block; font-weight: 550; }
+  .check .t small { color: var(--dim); font-size: 11.5px; }
 
   button.btn {
-    appearance: none; cursor: pointer; font: inherit; font-size: 13.5px;
-    padding: 9px 15px; border-radius: 9px; font-weight: 550;
-    background: var(--panel-2); color: var(--text); border: 1px solid var(--line);
-    transition: .15s;
+    appearance: none; cursor: pointer; font: inherit; font-size: 13px; font-weight: 550;
+    padding: 8px 15px; border-radius: 9px; border: 1px solid var(--line);
+    background: var(--panel); color: var(--text);
+    display: inline-flex; align-items: center; gap: 7px;
+    transition: background .13s, border-color .13s, opacity .13s;
   }
-  button.btn:hover:not(:disabled) { background: #22303f; border-color: #33445c; }
-  button.btn:disabled { opacity: .45; cursor: not-allowed; }
-  button.btn.primary { background: var(--accent); border-color: var(--accent); color: #04121f; }
-  button.btn.primary:hover:not(:disabled) { background: #58aeff; border-color: #58aeff; }
-  button.btn.ok { background: #23a06a; border-color: #23a06a; color: #04140c; }
-  button.btn.ok:hover:not(:disabled) { background: #2bbd7d; }
-  button.btn.danger { background: transparent; border-color: #5a2b30; color: #ff8b8f; }
-  button.btn.danger:hover:not(:disabled) { background: #f2555a1a; border-color: #8a3a40; }
+  button.btn svg { width: 15px; height: 15px; stroke-width: 2; }
+  button.btn:hover:not(:disabled) { background: var(--line-soft); }
+  button.btn:disabled { opacity: .5; cursor: not-allowed; }
+  button.btn.primary {
+    background: var(--accent); border-color: var(--accent); color: #fff;
+  }
+  button.btn.primary:hover:not(:disabled) { background: var(--accent-hover); border-color: var(--accent-hover); }
+  button.btn.danger { color: var(--err); border-color: #f0cfcd; }
+  button.btn.danger:hover:not(:disabled) { background: var(--err-soft); }
   .actions { display: flex; gap: 9px; flex-wrap: wrap; align-items: center; }
 
   .chips { display: flex; gap: 6px; flex-wrap: wrap; margin: 8px 0 12px; }
   .chip {
-    font-family: var(--mono); font-size: 11.5px; padding: 3px 8px;
-    background: #0d131c; border: 1px solid var(--line); border-radius: 6px;
+    font-family: var(--mono); font-size: 11px; padding: 3px 8px;
+    background: var(--panel-2); border: 1px solid var(--line); border-radius: 6px;
     color: var(--muted); cursor: pointer;
   }
-  .chip:hover { color: var(--accent); border-color: var(--accent-dim); }
-  table.data { width: 100%; border-collapse: collapse; font-size: 13px; }
-  table.data th {
-    text-align: left; padding: 8px 10px; color: var(--muted); font-size: 11.5px;
-    text-transform: uppercase; letter-spacing: .4px; border-bottom: 1px solid var(--line);
-    position: sticky; top: 0; background: var(--panel-2); z-index: 1;
+  .chip:hover { border-color: var(--accent); color: var(--accent); }
+  .kbd { font-family: var(--mono); font-size: 11.5px; background: var(--panel-2); border: 1px solid var(--line); border-radius: 5px; padding: 1px 6px; }
+
+  /* ============================== 表格 ============================== */
+  .tw { overflow-x: auto; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th, td { text-align: left; padding: 10px 12px; border-bottom: 1px solid var(--line-soft); vertical-align: top; }
+  th { font-size: 11.5px; text-transform: uppercase; letter-spacing: .04em; color: var(--dim); font-weight: 600; white-space: nowrap; }
+  tbody tr:last-child td { border-bottom: 0; }
+  tbody tr:hover { background: var(--panel-2); }
+  td.title { max-width: 430px; }
+  td.title a { color: var(--text); }
+  td.title a:hover { color: var(--accent); }
+  td .muted { color: var(--dim); font-size: 12px; }
+  .tag {
+    display: inline-block; font-size: 11px; font-weight: 600; padding: 2px 8px;
+    border-radius: 999px; white-space: nowrap;
   }
-  table.data td { padding: 9px 10px; border-bottom: 1px solid var(--line-soft); vertical-align: top; }
-  table.data tr:hover td { background: #ffffff05; }
-  table.data td.t { max-width: 460px; word-break: break-word; }
-  .scroll { max-height: 430px; overflow: auto; border: 1px solid var(--line); border-radius: 10px; }
-  .tag { display: inline-block; padding: 1px 7px; border-radius: 5px; font-size: 11px; font-weight: 600; white-space: nowrap; }
-  .tag.sent { background: #35c98a22; color: #57dca4; }
-  .tag.pending { background: #f0b42922; color: #f6c756; }
-  .tag.failed { background: #f2555a22; color: #ff8b8f; }
-  pre.logs {
-    margin: 0; padding: 12px; background: #080c11; border: 1px solid var(--line);
-    border-radius: 10px; font-family: var(--mono); font-size: 12px; line-height: 1.5;
-    white-space: pre-wrap; word-break: break-word; max-height: 430px; overflow: auto; color: #b9c8da;
+  .tag.sent { background: var(--ok-soft); color: var(--ok); }
+  .tag.pending { background: var(--warn-soft); color: var(--warn); }
+  .tag.failed { background: var(--err-soft); color: var(--err); }
+  .tag.movie { background: var(--info-soft); color: var(--info); }
+  .tag.tv { background: var(--accent-soft); color: var(--accent); }
+  .empty { padding: 30px; text-align: center; color: var(--dim); font-size: 13px; }
+
+  .pill {
+    display: inline-flex; align-items: center; gap: 7px;
+    padding: 5px 12px; border-radius: 999px; font-size: 12.5px;
+    background: var(--panel); border: 1px solid var(--line); color: var(--muted);
+    white-space: nowrap;
   }
-  .empty { padding: 26px; text-align: center; color: var(--dim); font-size: 13px; }
+  .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--dim); flex: 0 0 auto; }
+  .dot.on { background: #12a06a; box-shadow: 0 0 0 3px #12a06a26; }
+  .dot.off { background: #b7bcc6; }
+
+  .log {
+    background: #fbfbfd; border: 1px solid var(--line); border-radius: 10px;
+    padding: 13px 15px; font-family: var(--mono); font-size: 12px; line-height: 1.7;
+    max-height: 60vh; overflow: auto; white-space: pre-wrap; word-break: break-word;
+    color: #40485a;
+  }
+  .log .t { color: var(--dim); }
+  .log .e { color: var(--err); }
+
+  .warnbox {
+    background: var(--warn-soft); border: 1px solid #f2ddb4; color: #7d5308;
+    border-radius: 10px; padding: 11px 14px; font-size: 12.5px; margin-bottom: 14px;
+  }
+  .okbox {
+    background: var(--ok-soft); border: 1px solid #c3e7d5; color: #0d6b47;
+    border-radius: 10px; padding: 11px 14px; font-size: 12.5px; margin-bottom: 14px;
+  }
+  .metricrow { display: flex; flex-wrap: wrap; gap: 26px; }
+  .metric .k { font-size: 12px; color: var(--muted); }
+  .metric .v { font-size: 17px; font-weight: 600; }
+  .muted-note { color: var(--dim); font-size: 12px; margin: 14px 0 0; }
+
   .toast-wrap { position: fixed; right: 20px; bottom: 20px; z-index: 100; display: flex; flex-direction: column; gap: 9px; max-width: min(430px, 92vw); }
   .toast {
-    padding: 11px 14px; border-radius: 10px; font-size: 13.5px;
+    padding: 11px 14px; border-radius: 10px; font-size: 13px;
     background: var(--panel); border: 1px solid var(--line);
-    box-shadow: 0 12px 32px -12px #000c; animation: slidein .22s ease; word-break: break-word;
+    box-shadow: 0 14px 32px -14px #1b203029; animation: slidein .2s ease; word-break: break-word;
   }
-  .toast.ok { border-color: #23704f; }
-  .toast.err { border-color: #7d363a; }
+  .toast.ok { border-color: #bfe3d2; }
+  .toast.err { border-color: #f0c9c7; }
   .toast .ttl { font-weight: 600; margin-bottom: 2px; }
   .toast .body { color: var(--muted); font-size: 12.5px; }
-  @keyframes slidein { from { opacity: 0; transform: translateX(18px); } }
+  @keyframes slidein { from { opacity: 0; transform: translateX(16px); } }
 
-  .login-wrap { min-height: 100vh; display: grid; place-items: center; padding: 22px; }
-  .login {
-    width: 100%; max-width: 380px; background: var(--panel);
-    border: 1px solid var(--line); border-radius: 15px; padding: 26px 24px;
-    box-shadow: 0 26px 60px -28px #000d;
-  }
-  .login .mark {
-    width: 46px; height: 46px; border-radius: 13px; margin: 0 auto 13px;
-    display: grid; place-items: center; font-size: 23px;
-    background: linear-gradient(140deg, #2b7fd4, #7b5cff);
-  }
-  .login h2 { margin: 0 0 4px; text-align: center; font-size: 18px; }
-  .login p.s { margin: 0 0 20px; text-align: center; color: var(--muted); font-size: 13px; }
-
-  .modal-back { position: fixed; inset: 0; background: #04070bcc; backdrop-filter: blur(3px); display: none; place-items: center; z-index: 90; padding: 22px; }
+  .modal-back { position: fixed; inset: 0; background: #1b203055; backdrop-filter: blur(2px); display: none; place-items: center; z-index: 90; padding: 22px; }
   .modal-back.show { display: grid; }
-  .modal { width: 100%; max-width: 620px; max-height: 86vh; overflow: auto; background: var(--panel); border: 1px solid var(--line); border-radius: 15px; padding: 20px; }
+  .modal { width: 100%; max-width: 660px; max-height: 86vh; overflow: auto; background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 22px; box-shadow: 0 24px 60px -24px #1b20304d; }
   .modal h3 { margin: 0 0 14px; font-size: 16px; }
-  .cap { background: #0d131c; border: 1px solid var(--line); border-radius: 10px; padding: 13px; white-space: pre-wrap; word-break: break-word; font-size: 13.5px; line-height: 1.6; }
-  .kbd { font-family: var(--mono); font-size: 12px; background: #0d131c; border: 1px solid var(--line); border-radius: 5px; padding: 1px 6px; }
+  .cap { background: var(--panel-2); border: 1px solid var(--line); border-radius: 10px; padding: 13px; white-space: pre-wrap; word-break: break-word; font-size: 13px; line-height: 1.7; }
   .inline-form { display: flex; gap: 9px; align-items: flex-end; flex-wrap: wrap; }
-  .inline-form > label.field { flex: 1 1 210px; margin-bottom: 0; }
+  .inline-form > label.field { flex: 1 1 230px; margin-bottom: 0; }
 </style>
 </head>
 <body>
 
-<!-- ============================ login ============================ -->
+<!-- ============================== 登录 ============================== -->
 <div id="login" class="login-wrap" hidden>
   <form class="login" id="loginForm">
     <div class="mark">📡</div>
-    <h2>ext.to → Telegram</h2>
-    <p class="s">Sign in to manage the forwarder</p>
+    <h2>EXT 转发面板</h2>
+    <p class="s">登录后管理 ext.to 抓取与 Telegram 推送</p>
     <label class="field">
-      <span class="lbl">Username</span>
+      <span class="lbl">用户名</span>
       <input type="text" id="loginUser" autocomplete="username" value="admin" required>
     </label>
     <label class="field">
-      <span class="lbl">Password</span>
+      <span class="lbl">密码</span>
       <input type="password" id="loginPass" autocomplete="current-password" required>
     </label>
-    <button class="btn primary" type="submit" style="width:100%">Sign in</button>
-    <p class="s" style="margin:14px 0 0">Default credentials are <span class="kbd">admin</span> / <span class="kbd">admin</span>. Change them after signing in.</p>
+    <button class="btn primary" type="submit" style="width:100%;justify-content:center">登 录</button>
+    <p class="s" style="margin:16px 0 0">默认账号密码为 <span class="kbd">admin</span> / <span class="kbd">admin</span>，登录后请及时修改。</p>
   </form>
 </div>
 
-<!-- ========================== dashboard ========================== -->
-<div id="app" class="wrap" hidden>
-  <header class="top">
+<!-- ============================== 主界面 ============================== -->
+<div id="app" class="shell" hidden>
+  <aside class="side">
     <div class="brand">
       <div class="mark">📡</div>
       <div>
-        <h1>ext.to → Telegram</h1>
-        <p class="sub" id="brandSub">Latest torrent posts, forwarded automatically</p>
+        <h1>EXT 转发面板</h1>
+        <p id="brandSub">ext.to → Telegram</p>
       </div>
     </div>
-    <div class="spacer"></div>
-    <span class="pill"><span class="dot off" id="statusDot"></span><span id="statusText">Stopped</span></span>
-    <span class="pill" id="nextPill" hidden>Next run <span id="nextRun">—</span></span>
-    <button class="btn" id="btnLogout" type="button">Sign out</button>
-  </header>
+    <nav class="menu" id="menu">
+      <div class="sect">运行</div>
+      <button data-pane="overview" class="active">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12h4l3 8 4-16 3 8h4"/></svg>
+        <span>总览</span>
+      </button>
+      <button data-pane="records">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6h16M4 12h16M4 18h10"/></svg>
+        <span>转发记录</span>
+      </button>
+      <button data-pane="logs">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><path d="M4 4h16v16H4z"/><path d="M8 9h8M8 13h8M8 17h5"/></svg>
+        <span>运行日志</span>
+      </button>
+      <div class="sect">配置</div>
+      <button data-pane="source">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a15 15 0 0 1 0 18 15 15 0 0 1 0-18z"/></svg>
+        <span>抓取来源</span>
+      </button>
+      <button data-pane="tmdb">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><path d="M4 5h16v14H4z"/><path d="M8 5v14M4 9h4M4 15h4"/><path d="M12 9h5M12 13h5"/></svg>
+        <span>TMDB 匹配</span>
+      </button>
+      <button data-pane="telegram">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><path d="M21 4 3 11l6 2 2 6 4-5 6-10z"/></svg>
+        <span>Telegram 推送</span>
+      </button>
+      <button data-pane="account">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8" r="3.2"/><path d="M5 20a7 7 0 0 1 14 0"/></svg>
+        <span>面板设置</span>
+      </button>
+    </nav>
+    <div class="foot">
+      <div class="who" id="footInfo">—</div>
+      <button class="btn" id="btnLogout" type="button" style="width:100%;justify-content:center">退出登录</button>
+    </div>
+  </aside>
 
-  <div class="grid cols-4">
-    <div class="card stat"><h2>Forwarded</h2><div class="n" id="sSent">0</div><div class="l">posts sent to Telegram</div></div>
-    <div class="card stat"><h2>Tracked</h2><div class="n" id="sTotal">0</div><div class="l">torrents seen in total</div></div>
-    <div class="card stat warn"><h2>Pending</h2><div class="n" id="sPending">0</div><div class="l">matched, not yet sent</div></div>
-    <div class="card stat err"><h2>Failed</h2><div class="n" id="sFailed">0</div><div class="l">delivery errors</div></div>
-  </div>
+  <main class="body">
+    <!-- ---------------------------- 总览 ---------------------------- -->
+    <div class="pane" id="pane-overview">
+      <div class="pagehead">
+        <div>
+          <h2>总览</h2>
+          <p>查看抓取与推送状态，手动启动、检查或测试。</p>
+        </div>
+        <div class="grow"></div>
+        <span class="pill"><span class="dot off" id="statusDot"></span><span id="statusText">已停止</span></span>
+        <span class="pill" id="nextPill" hidden>下次运行 <span id="nextRun">—</span></span>
+        <button class="btn" id="btnRefresh" type="button">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-3-6.7"/><path d="M21 4v5h-5"/></svg>
+          刷新
+        </button>
+      </div>
 
-  <nav class="tabs">
-    <button class="active" data-tab="overview" type="button">Overview</button>
-    <button data-tab="settings" type="button">Settings</button>
-    <button data-tab="history" type="button">History</button>
-    <button data-tab="logs" type="button">Logs</button>
-  </nav>
+      <div class="warnbox" id="cfWarn" hidden></div>
 
-  <section class="tabpane active" id="tab-overview">
-    <div class="grid cols-2">
+      <div class="grid cols-5" style="margin-bottom:14px">
+        <div class="stat">
+          <div class="ico ok" id="icoMonitor"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v18M5 8l7-5 7 5"/></svg></div>
+          <div class="lbl">监听服务</div>
+          <div class="val sm" id="sMonitor">已停止</div>
+        </div>
+        <div class="stat">
+          <div class="ico info"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><path d="M21 4 3 11l6 2 2 6 4-5 6-10z"/></svg></div>
+          <div class="lbl">Telegram</div>
+          <div class="val sm" id="sTelegram">未配置</div>
+        </div>
+        <div class="stat">
+          <div class="ico warn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><path d="M4 5h16v14H4z"/><path d="M12 9v4M12 16h.01"/></svg></div>
+          <div class="lbl">TMDB</div>
+          <div class="val sm" id="sTMDB">未配置</div>
+        </div>
+        <div class="stat">
+          <div class="ico ok"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg></div>
+          <div class="lbl">已转发</div>
+          <div class="val" id="sSent">0</div>
+          <div class="sub">累计推送成功</div>
+        </div>
+        <div class="stat">
+          <div class="ico off"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg></div>
+          <div class="lbl">跟踪总数</div>
+          <div class="val" id="sTotal">0</div>
+          <div class="sub">已见过的种子</div>
+        </div>
+      </div>
+
       <div class="card">
-        <h2>Controls</h2>
-        <p class="hint">Start monitoring, or run a single scan right now.</p>
+        <div class="cardhead">
+          <h3>监听控制</h3>
+          <div class="grow"></div>
+          <span class="cardico"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v18M5 8l7-5 7 5"/></svg></span>
+        </div>
+        <p class="hint">保存好 cookie 与频道配置后，在这里启动、停止或测试。首次扫描只建立基线，不会推送历史种子。</p>
         <div class="actions">
-          <button class="btn ok" id="btnStart" type="button">▶ Start monitoring</button>
-          <button class="btn danger" id="btnStop" type="button">■ Stop</button>
-          <button class="btn primary" id="btnCheck" type="button">⟳ Check now</button>
+          <button class="btn primary" id="btnStart" type="button">启动监听</button>
+          <button class="btn" id="btnCheck" type="button">立即检查</button>
+          <button class="btn" id="btnStop" type="button" disabled>停止监听</button>
+          <button class="btn" id="btnTest" type="button">测试抓取</button>
+          <button class="btn" id="btnTestTg" type="button">测试 Telegram</button>
         </div>
-        <p class="hint" style="margin-top:14px">"Check now" fetches the listing and forwards anything new, without waiting for the next scheduled run.</p>
+        <p class="muted-note" id="lastRunHint">—</p>
       </div>
 
-      <div class="card">
-        <h2>Diagnostics</h2>
-        <p class="hint">Verify the scraper and the Telegram connection independently.</p>
-        <div class="actions">
-          <button class="btn" id="btnTest" type="button">🔍 Test scrape</button>
-          <button class="btn" id="btnTestTg" type="button">✈ Test Telegram</button>
-        </div>
-        <p class="hint" style="margin-top:14px">"Test scrape" reads the live listing and shows what would match, without posting anything.</p>
-      </div>
-    </div>
-
-    <div class="card" style="margin-top:16px">
-      <h2>Last scan</h2>
-      <p class="hint" id="lastRunHint">No scan has run yet.</p>
-      <div class="grid cols-4" style="margin-top:6px">
-        <div><div style="color:var(--muted);font-size:12.5px">Found</div><div id="lrFound" style="font-size:19px">—</div></div>
-        <div><div style="color:var(--muted);font-size:12.5px">New matches</div><div id="lrNew" style="font-size:19px">—</div></div>
-        <div><div style="color:var(--muted);font-size:12.5px">Sent</div><div id="lrSent" style="font-size:19px">—</div></div>
-        <div><div style="color:var(--muted);font-size:12.5px">Failed</div><div id="lrFailed" style="font-size:19px">—</div></div>
-      </div>
-      <div id="lrErr" class="hint" style="margin:12px 0 0;display:none;color:#ff8b8f"></div>
-    </div>
-
-    <div class="card" style="margin-top:16px">
-      <h2>Latest activity</h2>
-      <p class="hint">The eight most recently tracked torrents.</p>
-      <div class="scroll"><table class="data">
-        <thead><tr><th>Title</th><th>Size</th><th>Status</th><th>Seen</th></tr></thead>
-        <tbody id="recentBody"><tr><td colspan="4" class="empty">No data yet.</td></tr></tbody>
-      </table></div>
-    </div>
-  </section>
-
-  <section class="tabpane" id="tab-settings">
-    <form id="settingsForm">
-      <div class="card">
-        <h2>Telegram delivery</h2>
-        <p class="hint">Where posts are sent, and how they look.</p>
-        <div class="row">
-          <label class="field">
-            <span class="lbl">Bot token</span>
-            <input type="password" id="setBotToken" placeholder="123456:ABC-DEF..." autocomplete="off">
-            <span class="help">From <span class="kbd">@BotFather</span>. Leave unchanged to keep the stored token.</span>
-          </label>
-          <label class="field">
-            <span class="lbl">Chat ID</span>
-            <input type="text" id="setChatID" placeholder="-1001234567890">
-            <span class="help">Channel or group id. Add the bot as an admin there.</span>
-          </label>
-        </div>
-        <label class="field">
-          <span class="lbl">Forum topic (optional)</span>
-          <input type="text" id="setTopic" placeholder="42 or https://t.me/c/1234567890/42">
-          <span class="help">Send into a specific topic of a forum group. Leave empty for the general topic.</span>
-        </label>
-        <label class="field">
-          <span class="lbl">Caption template</span>
-          <textarea id="setTemplate" spellcheck="false"></textarea>
-          <span class="help">Telegram HTML is supported. Click a field below to insert it.</span>
-        </label>
-        <div class="chips" id="fieldChips"></div>
-        <div class="row">
-          <div>
-            <label class="check"><input type="checkbox" id="setPoster"><span><span class="t">Attach poster image</span><span class="d">Downloads the poster and uploads it with each post</span></span></label>
-            <label class="check"><input type="checkbox" id="setMagnet"><span><span class="t">Include magnet link</span><span class="d">Resolves the signed magnet for {magnet}</span></span></label>
+      <div class="grid cols-2">
+        <div class="card" style="margin-bottom:0">
+          <h3>最近一次扫描</h3>
+          <p class="hint" id="lastScanLine">尚无扫描记录。</p>
+          <div class="metricrow">
+            <div class="metric"><div class="k">抓取</div><div class="v" id="lrFound">0</div></div>
+            <div class="metric"><div class="k">新增匹配</div><div class="v" id="lrNew">0</div></div>
+            <div class="metric"><div class="k">已推送</div><div class="v" id="lrSent">0</div></div>
+            <div class="metric"><div class="k">跳过</div><div class="v" id="lrSkipped">0</div></div>
+            <div class="metric"><div class="k">失败</div><div class="v" id="lrFailed">0</div></div>
           </div>
-          <div>
-            <label class="check"><input type="checkbox" id="setSilent"><span><span class="t">Send silently</span><span class="d">No notification sound on delivery</span></span></label>
-            <label class="check"><input type="checkbox" id="setNoPreview"><span><span class="t">Disable link preview</span><span class="d">Keeps posts compact</span></span></label>
+          <div class="warnbox" id="lrErr" hidden style="margin:14px 0 0"></div>
+        </div>
+        <div class="card" style="margin-bottom:0">
+          <div class="cardhead">
+            <h3>最新动态</h3>
+            <div class="grow"></div>
+          </div>
+          <p class="hint">最近跟踪到的 8 条种子。</p>
+          <div class="tw">
+            <table>
+              <thead><tr><th>标题</th><th>大小</th><th>状态</th><th>时间</th></tr></thead>
+              <tbody id="recentBody"></tbody>
+            </table>
           </div>
         </div>
-        <div class="actions">
-          <button class="btn" id="btnTg2" type="button">✈ Send test message</button>
-        </div>
       </div>
+    </div>
 
-      <div class="card" style="margin-top:16px">
-        <h2>What to watch</h2>
-        <p class="hint">Choose categories and how much history to scan each run.</p>
-        <div class="row">
-          <label class="field">
-            <span class="lbl">Categories</span>
-            <select multiple id="setCats"></select>
-            <span class="help">Ctrl/Cmd-click to select several. "All" covers everything.</span>
-          </label>
-          <div>
+    <!-- ---------------------------- 抓取来源 ---------------------------- -->
+    <div class="pane" id="pane-source" hidden>
+      <div class="pagehead">
+        <div>
+          <h2>抓取来源</h2>
+          <p>选择分类与时间范围，配置过滤规则和扫描频率。</p>
+        </div>
+        <div class="grow"></div>
+        <button class="btn" id="btnTestSrc" type="button">测试抓取</button>
+      </div>
+      <form id="settingsForm">
+        <div class="card">
+          <h3>监听范围</h3>
+          <p class="hint">决定每次扫描抓取哪些分类、往前看多久。</p>
+          <div class="row">
             <label class="field">
-              <span class="lbl">Age window</span>
-              <select id="setAge"></select>
-              <span class="help">How far back each scan looks.</span>
+              <span class="lbl">分类（可多选）</span>
+              <select id="setCats" multiple size="9"></select>
+              <span class="help">按住 Ctrl / Cmd 多选。「全部」会覆盖其他选项。</span>
+            </label>
+            <div>
+              <label class="field">
+                <span class="lbl">时间范围</span>
+                <select id="setAge"></select>
+                <span class="help">每次扫描向前回溯多久。</span>
+              </label>
+              <label class="field">
+                <span class="lbl">每分类页数</span>
+                <input type="number" id="setPages" min="1" max="20" step="1">
+                <span class="help">每页 50 条。页数越多越全，但扫描越慢。</span>
+              </label>
+            </div>
+          </div>
+        </div>
+
+        <div class="card">
+          <h3>过滤规则</h3>
+          <p class="hint">按标题正则筛选。包含规则命中任意一条才会推送，排除规则命中任意一条就会丢弃。</p>
+          <div class="row">
+            <label class="field">
+              <span class="lbl">包含规则（可选）</span>
+              <textarea id="setInclude" placeholder="1080p&#10;S[0-9]{1,2}E"></textarea>
+              <span class="help">每行一条正则，不区分大小写。</span>
             </label>
             <label class="field">
-              <span class="lbl">Pages per category</span>
-              <input type="number" id="setPages" min="1" max="20">
-              <span class="help">50 torrents per page. Higher values catch more, but scan slower.</span>
+              <span class="lbl">排除规则（可选）</span>
+              <textarea id="setExclude" placeholder="CAM&#10;XXX"></textarea>
+              <span class="help">每行一条正则，任意一条命中即丢弃。</span>
+            </label>
+          </div>
+          <div class="row">
+            <label class="field">
+              <span class="lbl">最小体积（MB）</span>
+              <input type="number" id="setMinSize" min="0" step="1">
+              <span class="help">0 表示不限制。</span>
+            </label>
+            <label class="field">
+              <span class="lbl">最大体积（MB）</span>
+              <input type="number" id="setMaxSize" min="0" step="1">
+              <span class="help">0 表示不限制。</span>
+            </label>
+            <label class="field">
+              <span class="lbl">单次最多推送</span>
+              <input type="number" id="setBatch" min="1" max="50" step="1">
+              <span class="help">长时间停机后限制一次补发的数量。</span>
             </label>
           </div>
         </div>
-        <div class="row">
-          <label class="field">
-            <span class="lbl">Include patterns (optional)</span>
-            <textarea id="setInclude" spellcheck="false" style="min-height:78px" placeholder="1080p&#10;S0[1-9]E"></textarea>
-            <span class="help">One regular expression per line. A title must match at least one.</span>
-          </label>
-          <label class="field">
-            <span class="lbl">Exclude patterns (optional)</span>
-            <textarea id="setExclude" spellcheck="false" style="min-height:78px" placeholder="CAM&#10;XXX"></textarea>
-            <span class="help">One regular expression per line. Any match drops the torrent.</span>
-          </label>
-        </div>
-        <div class="row">
-          <label class="field">
-            <span class="lbl">Minimum size (MB)</span>
-            <input type="number" id="setMinSize" min="0" step="1">
-            <span class="help">0 disables this filter.</span>
-          </label>
-          <label class="field">
-            <span class="lbl">Maximum size (MB)</span>
-            <input type="number" id="setMaxSize" min="0" step="1">
-            <span class="help">0 disables this filter.</span>
-          </label>
-          <label class="field">
-            <span class="lbl">Max posts per run</span>
-            <input type="number" id="setBatch" min="1" max="50">
-            <span class="help">Caps a burst after downtime.</span>
-          </label>
-        </div>
-      </div>
 
-      <div class="card" style="margin-top:16px">
-        <h2>Schedule</h2>
-        <p class="hint">How often the listing is checked.</p>
-        <div class="row">
+        <div class="card">
+          <h3>访问凭据</h3>
+          <p class="hint">ext.to 由 Cloudflare 保护，需要浏览器通过验证后的 cookie。cookie 与出口 IP 绑定，换 IP 后需要重新获取。</p>
           <label class="field">
-            <span class="lbl">Interval (seconds)</span>
-            <input type="number" id="setInterval" min="60" max="86400" step="30">
-            <span class="help">Minimum 60 seconds. 600 is a good default.</span>
+            <span class="lbl">cf_clearance Cookie</span>
+            <input type="password" id="setClearance" autocomplete="off" placeholder="粘贴浏览器中的 cf_clearance 值">
+            <span class="help">留空表示保持已保存的值。</span>
           </label>
-          <div>
-            <label class="check"><input type="checkbox" id="setEnabled"><span><span class="t">Monitoring enabled</span><span class="d">Starts polling as soon as you save</span></span></label>
+          <div class="row">
+            <label class="field">
+              <span class="lbl">PHPSESSID（可选）</span>
+              <input type="password" id="setSession" autocomplete="off">
+            </label>
+            <label class="field">
+              <span class="lbl">HTTP 代理（可选）</span>
+              <input type="text" id="setProxy" placeholder="http://user:pass@host:port">
+            </label>
           </div>
-        </div>
-      </div>
-
-      <div class="card" style="margin-top:16px">
-        <h2>ext.to access</h2>
-        <p class="hint">Cloudflare blocks datacenter traffic, so the forwarder reuses a clearance cookie harvested from a real browser.</p>
-        <div id="cfWarn" style="display:none;margin:0 0 13px;padding:11px 13px;border:1px solid #5a4a1e;border-radius:9px;background:#f0b42912;color:#f6c756;font-size:12.5px;line-height:1.6">
-          <b>How to get these values.</b> Open ext.to in a browser on the <i>same network</i> as this container, pass the "Verifying you are human" check, then copy the <span class="kbd">cf_clearance</span> cookie value.
-          Cloudflare binds it to both the IP and the User-Agent, so keep the User-Agent identical to that browser's.
-        </div>
-        <label class="field">
-          <span class="lbl">cf_clearance cookie</span>
-          <input type="password" id="setClearance" placeholder="value only, not the whole cookie line" autocomplete="off">
-          <span class="help">Leave unchanged to keep the stored value.</span>
-        </label>
-        <div class="row">
-          <label class="field">
-            <span class="lbl">PHPSESSID (optional)</span>
-            <input type="password" id="setSession" autocomplete="off">
-          </label>
           <label class="field">
             <span class="lbl">User-Agent</span>
             <input type="text" id="setUA">
-            <span class="help">Must match the browser that produced the cookie.</span>
+            <span class="help">必须与获取 cookie 时使用的浏览器一致。</span>
           </label>
         </div>
-        <label class="field">
-          <span class="lbl">HTTP proxy (optional)</span>
-          <input type="text" id="setProxy" placeholder="http://user:pass@host:port">
-          <span class="help">Only needed if ext.to is unreachable directly, or to pin a stable egress IP.</span>
-        </label>
+
+        <div class="card">
+          <h3>扫描频率</h3>
+          <p class="hint">监听开启后会按此间隔循环扫描。</p>
+          <div class="row">
+            <label class="field">
+              <span class="lbl">间隔（秒）</span>
+              <input type="number" id="setInterval" min="60" max="86400" step="30">
+              <span class="help">最小 60 秒，最大 24 小时。</span>
+            </label>
+          </div>
+          <label class="check">
+            <input type="checkbox" id="setEnabled">
+            <span class="t"><b>开启监听</b><small>保存后立即开始轮询。</small></span>
+          </label>
+        </div>
+
+        <div class="actions">
+          <button class="btn primary" type="submit">保存设置</button>
+          <button class="btn" id="btnReload" type="button">放弃修改</button>
+        </div>
+      </form>
+    </div>
+
+    <!-- ---------------------------- TMDB ---------------------------- -->
+    <div class="pane" id="pane-tmdb" hidden>
+      <div class="pagehead">
+        <div>
+          <h2>TMDB 匹配</h2>
+          <p>用 TMDB 校验影视信息，补全标题、评分与海报，并可按编号去重。</p>
+        </div>
+        <div class="grow"></div>
+        <button class="btn" id="btnTestTmdb" type="button">测试 TMDB</button>
       </div>
 
-      <div class="card" style="margin-top:16px">
-        <h2>Dashboard access</h2>
-        <p class="hint">Credentials for this web interface.</p>
+      <div class="card">
+        <h3>匹配规则</h3>
+        <p class="hint">
+          优先使用详情页提供的 IMDb 编号（<span class="kbd">tt</span> 开头）通过 TMDB 的
+          <span class="kbd">/find</span> 接口定位条目；没有编号时才按标题搜索，且必须标题完全一致。
+          标题只取发布名的首行，<b>不会</b>读取简介、分享、字幕、体积、标签等正文内容。
+        </p>
+        <label class="field">
+          <span class="lbl">TMDB API Key</span>
+          <input type="password" id="setTmdbKey" autocomplete="off" placeholder="v3 密钥或 v4 令牌">
+          <span class="help">留空表示保持已保存的值；清空后不再启用 TMDB。</span>
+        </label>
         <div class="row">
           <label class="field">
-            <span class="lbl">Username</span>
-            <input type="text" id="setAdminUser" autocomplete="off">
+            <span class="lbl">语言</span>
+            <input type="text" id="setTmdbLang" placeholder="zh-CN">
+            <span class="help">例如 <span class="kbd">zh-CN</span> 返回中文标题与简介。</span>
           </label>
           <label class="field">
-            <span class="lbl">Password</span>
-            <input type="password" id="setAdminPass" autocomplete="new-password" placeholder="leave blank to keep current">
+            <span class="lbl">海报来源</span>
+            <select id="setPosterSource">
+              <option value="auto">自动（优先 TMDB，失败回退种子站）</option>
+              <option value="tmdb">仅 TMDB</option>
+              <option value="tracker">仅种子站</option>
+            </select>
           </label>
         </div>
-      </div>
-
-      <div class="actions" style="margin-top:18px">
-        <button class="btn primary" type="submit">💾 Save settings</button>
-        <button class="btn" id="btnReload" type="button">Discard changes</button>
-        <div class="spacer"></div>
-        <button class="btn danger" id="btnClear" type="button">Clear history</button>
-      </div>
-    </form>
-  </section>
-
-  <section class="tabpane" id="tab-history">
-    <div class="card">
-      <h2>Tracked torrents</h2>
-      <p class="hint">Everything the forwarder has seen, whether or not it was posted.</p>
-      <div class="inline-form" style="margin-bottom:13px">
-        <label class="field">
-          <span class="lbl">Filter</span>
-          <select id="histStatus">
-            <option value="">All</option>
-            <option value="sent">Sent</option>
-            <option value="pending">Pending</option>
-            <option value="failed">Failed</option>
-          </select>
+        <label class="check">
+          <input type="checkbox" id="setTmdbOnly">
+          <span class="t"><b>只推送匹配到 TMDB 的种子</b><small>未匹配到的条目会被跳过而不是推送，记录中计入「跳过」。</small></span>
         </label>
-        <button class="btn" id="btnHistReload" type="button">⟳ Refresh</button>
       </div>
-      <div class="scroll" style="max-height:560px"><table class="data">
-        <thead><tr><th>Title</th><th>Category</th><th>Size</th><th>Status</th><th>Seen</th></tr></thead>
-        <tbody id="histBody"><tr><td colspan="5" class="empty">No records yet.</td></tr></tbody>
-      </table></div>
-    </div>
-  </section>
 
-  <section class="tabpane" id="tab-logs">
-    <div class="card">
-      <h2>Activity log</h2>
-      <p class="hint">Recent output from the forwarder, newest last.</p>
-      <div class="actions" style="margin-bottom:12px">
-        <button class="btn" id="btnLogsReload" type="button">⟳ Refresh</button>
-        <label class="check" style="margin:0"><input type="checkbox" id="logsAuto" checked><span class="t">Auto-refresh</span></label>
+      <div class="card">
+        <h3>标题解析测试</h3>
+        <p class="hint">粘贴一个发布名，查看解析出的标题、年份、类型，以及 TMDB 的匹配结果。</p>
+        <form class="inline-form" id="lookupForm">
+          <label class="field">
+            <span class="lbl">发布名</span>
+            <input type="text" id="lookupTitle" placeholder="Glass.Onion.2022.720p.WEB-DL">
+          </label>
+          <label class="field" style="flex:0 1 200px">
+            <span class="lbl">IMDb 编号（可选）</span>
+            <input type="text" id="lookupIMDb" placeholder="tt11564570">
+          </label>
+          <button class="btn primary" type="submit">解析</button>
+        </form>
+        <div id="lookupOut" hidden style="margin-top:16px"></div>
       </div>
-      <pre class="logs" id="logBox">No log output yet.</pre>
     </div>
-  </section>
-</div>
 
-<div class="modal-back" id="modalBack">
-  <div class="modal">
-    <h3 id="modalTitle">Result</h3>
-    <div id="modalBody"></div>
-    <div class="actions" style="margin-top:16px">
-      <button class="btn" id="modalClose" type="button">Close</button>
+    <!-- ---------------------------- Telegram ---------------------------- -->
+    <div class="pane" id="pane-telegram" hidden>
+      <div class="pagehead">
+        <div>
+          <h2>Telegram 推送</h2>
+          <p>配置机器人、目标频道与推送内容格式。</p>
+        </div>
+        <div class="grow"></div>
+        <button class="btn" id="btnTg2" type="button">测试 Telegram</button>
+      </div>
+      <form id="telegramForm">
+        <div class="card">
+          <h3>推送目标</h3>
+          <p class="hint">向 <span class="kbd">@BotFather</span> 创建机器人，并把机器人拉进目标频道设为管理员。</p>
+          <div class="row">
+            <label class="field">
+              <span class="lbl">机器人 Token</span>
+              <input type="password" id="setBotToken" autocomplete="off" placeholder="123456:ABC-DEF...">
+              <span class="help">留空表示保持已保存的值。</span>
+            </label>
+            <label class="field">
+              <span class="lbl">Chat ID</span>
+              <input type="text" id="setChatID" placeholder="-1001234567890">
+              <span class="help">频道或群组 ID，例如 <span class="kbd">-1001234567890</span>。</span>
+            </label>
+          </div>
+          <label class="field">
+            <span class="lbl">论坛话题（可选）</span>
+            <input type="text" id="setTopic" placeholder="42 或 https://t.me/c/1234567890/42">
+            <span class="help">推送到群组内的指定话题，留空则发到默认话题。</span>
+          </label>
+        </div>
+
+        <div class="card">
+          <h3>推送内容</h3>
+          <p class="hint">使用占位符组合消息正文，支持 Telegram 的 HTML 标签（<span class="kbd">&lt;b&gt;</span>、<span class="kbd">&lt;i&gt;</span>、<span class="kbd">&lt;a&gt;</span>、<span class="kbd">&lt;code&gt;</span>）。</p>
+          <label class="field">
+            <span class="lbl">消息模板</span>
+            <textarea id="setTemplate"></textarea>
+          </label>
+          <div class="chips" id="fieldChips"></div>
+          <div class="actions" style="margin-bottom:6px">
+            <button class="btn" id="btnUseDefault" type="button">默认模板</button>
+            <button class="btn" id="btnUseTmdb" type="button">TMDB 模板</button>
+          </div>
+        </div>
+
+        <div class="card">
+          <h3>发送选项</h3>
+          <p class="hint">控制推文的附加内容与提醒方式。</p>
+          <div class="row">
+            <div>
+              <label class="check">
+                <input type="checkbox" id="setPoster">
+                <span class="t"><b>附带海报</b><small>把海报作为图片发送，正文作为图片说明。</small></span>
+              </label>
+              <label class="check">
+                <input type="checkbox" id="setMagnet">
+                <span class="t"><b>附带磁力链接</b><small>从详情页实时获取签名磁力链接。</small></span>
+              </label>
+            </div>
+            <div>
+              <label class="check">
+                <input type="checkbox" id="setSilent">
+                <span class="t"><b>静默推送</b><small>不发出提示音。</small></span>
+              </label>
+              <label class="check">
+                <input type="checkbox" id="setNoPreview">
+                <span class="t"><b>关闭链接预览</b><small>不生成链接缩略预览。</small></span>
+              </label>
+            </div>
+          </div>
+        </div>
+
+        <div class="actions">
+          <button class="btn primary" type="submit">保存设置</button>
+        </div>
+        <p class="muted-note">提示：抓取相关的设置集中在「抓取来源」页面。</p>
+      </form>
     </div>
-  </div>
+
+    <!-- ---------------------------- 记录 ---------------------------- -->
+    <div class="pane" id="pane-records" hidden>
+      <div class="pagehead">
+        <div>
+          <h2>转发记录</h2>
+          <p>已跟踪的种子及推送结果。</p>
+        </div>
+        <div class="grow"></div>
+        <select id="histStatus" style="width:auto">
+          <option value="">全部状态</option>
+          <option value="sent">已推送</option>
+          <option value="pending">待推送</option>
+          <option value="failed">失败</option>
+        </select>
+        <button class="btn" id="btnHistReload" type="button">刷新</button>
+        <button class="btn danger" id="btnClear" type="button">清空记录</button>
+      </div>
+      <div class="card">
+        <div class="tw">
+          <table>
+            <thead><tr><th>标题</th><th>TMDB</th><th>大小</th><th>状态</th><th>时间</th></tr></thead>
+            <tbody id="histBody"></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- ---------------------------- 日志 ---------------------------- -->
+    <div class="pane" id="pane-logs" hidden>
+      <div class="pagehead">
+        <div>
+          <h2>运行日志</h2>
+          <p>最近的服务端日志，最多保留 300 行。</p>
+        </div>
+        <div class="grow"></div>
+        <label class="check" style="margin:0">
+          <input type="checkbox" id="logsAuto" checked>
+          <span class="t">自动刷新</span>
+        </label>
+        <button class="btn" id="btnLogsReload" type="button">刷新</button>
+      </div>
+      <div class="card">
+        <div class="log" id="logBox"></div>
+      </div>
+    </div>
+
+    <!-- ---------------------------- 面板设置 ---------------------------- -->
+    <div class="pane" id="pane-account" hidden>
+      <div class="pagehead">
+        <div>
+          <h2>面板设置</h2>
+          <p>修改登录本面板的账号与密码。</p>
+        </div>
+      </div>
+      <form id="accountForm">
+        <div class="card">
+          <h3>登录凭据</h3>
+          <p class="hint">修改后当前会话仍然有效，下次登录需要使用新凭据。</p>
+          <div class="row">
+            <label class="field">
+              <span class="lbl">用户名</span>
+              <input type="text" id="setAdminUser" autocomplete="username">
+            </label>
+            <label class="field">
+              <span class="lbl">新密码</span>
+              <input type="password" id="setAdminPass" autocomplete="new-password" placeholder="留空表示不修改">
+            </label>
+          </div>
+          <div class="actions">
+            <button class="btn primary" type="submit">保存</button>
+          </div>
+        </div>
+      </form>
+      <div class="card">
+        <h3>关于</h3>
+        <p class="hint" style="margin-bottom:10px">ext.to 抓取并转发到 Telegram 的自动化工具。</p>
+        <div class="metricrow">
+          <div class="metric"><div class="k">版本</div><div class="v" id="aboutVersion">—</div></div>
+          <div class="metric"><div class="k">面板地址</div><div class="v" style="font-size:14px" id="aboutAddr">—</div></div>
+        </div>
+      </div>
+    </div>
+  </main>
 </div>
 
 <div class="toast-wrap" id="toasts"></div>
 
+<div class="modal-back" id="modalBack">
+  <div class="modal">
+    <div class="cardhead" style="margin-bottom:16px">
+      <h3 id="modalTitle">详情</h3>
+      <div class="grow"></div>
+      <button class="btn" id="modalClose" type="button">关闭</button>
+    </div>
+    <div id="modalBody"></div>
+  </div>
+</div>
+
 <script>
 "use strict";
 
-let META = { categories: [], ages: [], template_fields: [], default_template: "" };
-let STATE = null;
-let nextRunAt = null;
-
 const $ = (id) => document.getElementById(id);
+
+let META = { categories: [], ages: [], template_fields: [], default_template: "", tmdb_template: "", poster_sources: [] };
+let nextRunAt = null;
+let SETTINGS = {};
+let currentPane = "overview";
+
+/* ------------------------------- 通用 ------------------------------- */
 
 function toast(title, body, kind) {
   const el = document.createElement("div");
@@ -539,7 +845,7 @@ async function api(method, path, body) {
   try { data = await res.json(); } catch (_) {}
   if (res.status === 401) {
     showLogin();
-    throw new Error("Session expired, please sign in again.");
+    throw new Error("会话已过期，请重新登录。");
   }
   if (!res.ok) throw new Error((data && data.error) || ("HTTP " + res.status));
   return data;
@@ -551,20 +857,20 @@ function fmtTime(iso) {
   if (isNaN(d)) return "—";
   const diff = (Date.now() - d.getTime()) / 1000;
   if (diff < 0) return d.toLocaleString();
-  if (diff < 60) return Math.max(0, Math.round(diff)) + "s ago";
-  if (diff < 3600) return Math.round(diff / 60) + "m ago";
-  if (diff < 86400) return Math.round(diff / 3600) + "h ago";
+  if (diff < 60) return Math.max(0, Math.round(diff)) + " 秒前";
+  if (diff < 3600) return Math.round(diff / 60) + " 分钟前";
+  if (diff < 86400) return Math.round(diff / 3600) + " 小时前";
   return d.toLocaleString();
 }
 
 function fmtCountdown(iso) {
   if (!iso) return "—";
   const s = Math.round((new Date(iso).getTime() - Date.now()) / 1000);
-  if (s <= 0) return "any moment";
-  if (s < 60) return s + "s";
+  if (s <= 0) return "即将开始";
+  if (s < 60) return s + " 秒";
   const m = Math.floor(s / 60), r = s % 60;
-  if (m < 60) return m + "m " + r + "s";
-  return Math.floor(m / 60) + "h " + (m % 60) + "m";
+  if (m < 60) return m + " 分 " + r + " 秒";
+  return Math.floor(m / 60) + " 小时 " + (m % 60) + " 分";
 }
 
 function esc(s) {
@@ -580,9 +886,20 @@ function sizeText(r) {
 }
 
 function statusOf(r) {
-  if (r.sent) return '<span class="tag sent">sent</span>';
-  if (r.error) return '<span class="tag failed" title="' + esc(r.error) + '">failed</span>';
-  return '<span class="tag pending">pending</span>';
+  if (r.sent) return '<span class="tag sent">已推送</span>';
+  if (r.error) return '<span class="tag failed" title="' + esc(r.error) + '">失败</span>';
+  return '<span class="tag pending">待推送</span>';
+}
+
+// tmdbOf renders the TMDB match for a record, when one was recorded.
+function tmdbOf(r) {
+  if (!r.tmdb_matched || !r.tmdb_id) return '<span class="muted">—</span>';
+  const type = r.tmdb_type === "tv" ? "剧集" : "电影";
+  const cls = r.tmdb_type === "tv" ? "tv" : "movie";
+  const label = (r.tmdb_title || "") + (r.tmdb_year ? " (" + r.tmdb_year + ")" : "");
+  return '<span class="tag ' + cls + '">' + esc(type) + "</span> " +
+    '<a href="https://www.themoviedb.org/' + esc(r.tmdb_type) + "/" + esc(r.tmdb_id) + '" target="_blank" rel="noopener">' +
+    esc(label) + "</a>";
 }
 
 function showLogin() { $("login").hidden = false; $("app").hidden = true; }
@@ -593,80 +910,97 @@ function setBusy(btn, busy, label) {
   if (busy) {
     if (!btn.dataset.text) btn.dataset.text = btn.textContent;
     btn.disabled = true;
-    btn.textContent = label || "Working…";
+    btn.textContent = label || "处理中…";
   } else {
     btn.disabled = false;
     if (btn.dataset.text) btn.textContent = btn.dataset.text;
   }
 }
 
+/* ------------------------------- 设置 ------------------------------- */
+
 function renderMeta() {
-  $("setCats").innerHTML = META.categories
-    .map((c) => '<option value="' + c.id + '">' + esc(c.name) + "</option>").join("");
-  $("setAge").innerHTML = META.ages
-    .map((a) => '<option value="' + a.id + '">' + esc(a.name) + "</option>").join("");
-  const chips = $("fieldChips");
-  chips.innerHTML = "";
-  (META.template_fields || []).forEach((f) => {
-    const c = document.createElement("span");
-    c.className = "chip";
-    c.textContent = f.key;
-    c.title = f.desc + " (click to insert)";
-    c.onclick = () => insertAtCursor($("setTemplate"), f.key);
-    chips.appendChild(c);
-  });
+  const cats = $("setCats");
+  cats.innerHTML = META.categories.map((c) =>
+    '<option value="' + c.id + '">' + esc(c.name) + "</option>").join("");
+  const ages = $("setAge");
+  ages.innerHTML = META.ages.map((a) =>
+    '<option value="' + a.id + '">' + esc(a.name) + "</option>").join("");
+  $("fieldChips").innerHTML = META.template_fields.map((f) =>
+    '<span class="chip" data-field="' + esc(f.key) + '" title="' + esc(f.desc) + '">' + esc(f.key) + "</span>").join("");
+  $("fieldChips").onclick = (ev) => {
+    const chip = ev.target.closest(".chip");
+    if (!chip) return;
+    insertAtCursor($("setTemplate"), chip.dataset.field);
+  };
 }
 
 function insertAtCursor(ta, text) {
-  const s = ta.selectionStart === null ? ta.value.length : ta.selectionStart;
-  const e = ta.selectionEnd === null ? ta.value.length : ta.selectionEnd;
-  ta.value = ta.value.slice(0, s) + text + ta.value.slice(e);
-  ta.setSelectionRange(s + text.length, s + text.length);
+  const start = ta.selectionStart ?? ta.value.length;
+  const end = ta.selectionEnd ?? ta.value.length;
+  ta.value = ta.value.slice(0, start) + text + ta.value.slice(end);
+  ta.selectionStart = ta.selectionEnd = start + text.length;
   ta.focus();
 }
 
 function fillSettings(s) {
+  SETTINGS = s || {};
+  $("setCats").selectedIndex = -1;
+  Array.prototype.forEach.call($("setCats").options, (o) => {
+    o.selected = (s.categories || []).indexOf(Number(o.value)) >= 0;
+  });
+  $("setAge").value = String(s.age ?? 0);
+  $("setPages").value = s.max_pages ?? 2;
+  $("setInclude").value = (s.include || []).join("\n");
+  $("setExclude").value = (s.exclude || []).join("\n");
+  $("setMinSize").value = s.min_size_mb ?? 0;
+  $("setMaxSize").value = s.max_size_mb ?? 0;
+  $("setBatch").value = s.batch_size ?? 10;
+  $("setInterval").value = s.interval_seconds ?? 600;
+  $("setEnabled").checked = !!s.enabled;
+  $("setClearance").value = s.clearance || "";
+  $("setSession").value = s.session || "";
+  $("setProxy").value = s.proxy || "";
+  $("setUA").value = s.user_agent || "";
   $("setBotToken").value = s.bot_token || "";
   $("setChatID").value = s.chat_id || "";
   $("setTopic").value = s.message_topic || "";
-  $("setTemplate").value = s.template || META.default_template || "";
+  $("setTemplate").value = s.template || "";
   $("setPoster").checked = !!s.with_poster;
   $("setMagnet").checked = !!s.with_magnet;
   $("setSilent").checked = !!s.silent;
   $("setNoPreview").checked = !!s.disable_web_preview;
+  $("setTmdbKey").value = s.tmdb_key || "";
+  $("setTmdbLang").value = s.tmdb_lang || "zh-CN";
+  $("setTmdbOnly").checked = !!s.tmdb_only;
+  $("setPosterSource").value = s.poster_source || "auto";
+  $("setAdminUser").value = s.admin_user || "admin";
 
-  const cats = {};
-  (s.categories || []).forEach((c) => { cats[c] = true; });
-  Array.prototype.forEach.call($("setCats").options, (o) => { o.selected = !!cats[Number(o.value)]; });
-  $("setAge").value = String(s.age === undefined ? 0 : s.age);
-  $("setPages").value = s.max_pages || 2;
-
-  $("setInclude").value = (s.include || []).join("\n");
-  $("setExclude").value = (s.exclude || []).join("\n");
-  $("setMinSize").value = s.min_size_mb || 0;
-  $("setMaxSize").value = s.max_size_mb || 0;
-  $("setBatch").value = s.batch_size || 10;
-  $("setInterval").value = s.interval_seconds || 600;
-  $("setEnabled").checked = !!s.enabled;
-
-  $("setClearance").value = s.clearance || "";
-  $("setSession").value = s.session || "";
-  $("setUA").value = s.user_agent || "";
-  $("setProxy").value = s.proxy || "";
-
-  $("setAdminUser").value = s.admin_user || "";
-  $("setAdminPass").value = "";
-  $("cfWarn").style.display = s.clearance ? "none" : "block";
+  $("sTelegram").textContent = s.bot_token ? "已配置" : "未配置";
+  $("sTMDB").textContent = s.tmdb_key ? (s.tmdb_lang || "zh-CN") : "未配置";
 }
 
 function splitLines(v) {
-  return v.split("\n").map((x) => x.trim()).filter(Boolean);
+  return v.split("\n").map((x) => x.trim()).filter((x) => x.length > 0);
 }
 
 function collectSettings() {
   const cats = [];
-  Array.prototype.forEach.call($("setCats").options, (o) => { if (o.selected) cats.push(Number(o.value)); });
+  Array.prototype.forEach.call($("setCats").options, (o) => {
+    if (o.selected) cats.push(Number(o.value));
+  });
   return {
+    clearance: $("setClearance").value,
+    session: $("setSession").value,
+    user_agent: $("setUA").value,
+    proxy: $("setProxy").value,
+    categories: cats,
+    age: Number($("setAge").value),
+    include: splitLines($("setInclude").value),
+    exclude: splitLines($("setExclude").value),
+    min_size_mb: Number($("setMinSize").value) || 0,
+    max_size_mb: Number($("setMaxSize").value) || 0,
+    max_pages: Number($("setPages").value) || 1,
     bot_token: $("setBotToken").value.trim(),
     chat_id: $("setChatID").value.trim(),
     message_topic: $("setTopic").value.trim(),
@@ -675,124 +1009,134 @@ function collectSettings() {
     with_magnet: $("setMagnet").checked,
     silent: $("setSilent").checked,
     disable_web_preview: $("setNoPreview").checked,
-    categories: cats.length ? cats : [9],
-    age: Number($("setAge").value),
-    max_pages: Number($("setPages").value) || 1,
-    include: splitLines($("setInclude").value),
-    exclude: splitLines($("setExclude").value),
-    min_size_mb: Number($("setMinSize").value) || 0,
-    max_size_mb: Number($("setMaxSize").value) || 0,
-    batch_size: Number($("setBatch").value) || 10,
+    tmdb_key: $("setTmdbKey").value.trim(),
+    tmdb_lang: $("setTmdbLang").value.trim(),
+    tmdb_only: $("setTmdbOnly").checked,
+    poster_source: $("setPosterSource").value,
     interval_seconds: Number($("setInterval").value) || 600,
+    batch_size: Number($("setBatch").value) || 10,
     enabled: $("setEnabled").checked,
-    clearance: $("setClearance").value.trim(),
-    session: $("setSession").value.trim(),
-    user_agent: $("setUA").value.trim(),
-    proxy: $("setProxy").value.trim(),
     admin_user: $("setAdminUser").value.trim(),
-    admin_password: $("setAdminPass").value
+    admin_password: $("setAdminPass").value || undefined
   };
 }
 
+async function loadSettings() {
+  const d = await api("GET", "/api/settings");
+  if (d.meta) { META = d.meta; renderMeta(); }
+  fillSettings(d.settings || {});
+}
+
+/* ------------------------------- 状态 ------------------------------- */
+
 function renderState(st) {
-  STATE = st;
   const running = !!st.running;
   $("statusDot").className = "dot " + (running ? "on" : "off");
-  $("statusText").textContent = running ? "Monitoring" : "Stopped";
-  $("brandSub").textContent = "Version " + (st.version || "dev");
-  const s = st.stats || {};
-  $("sSent").textContent = s.sent || 0;
-  $("sTotal").textContent = s.total || 0;
-  $("sPending").textContent = s.pending || 0;
-  $("sFailed").textContent = s.failed || 0;
+  $("statusText").textContent = running ? "运行中" : "已停止";
+  $("sMonitor").textContent = running ? "运行中" : "已停止";
+  $("icoMonitor").className = "ico " + (running ? "ok" : "off");
   $("btnStart").disabled = running;
   $("btnStop").disabled = !running;
+
+  const stats = st.stats || {};
+  $("sSent").textContent = stats.sent ?? 0;
+  $("sTotal").textContent = stats.total ?? 0;
+
+  const last = st.last_run || {};
+  if (last.started_at && last.started_at !== "0001-01-01T00:00:00Z") {
+    $("lastScanLine").textContent =
+      new Date(last.started_at).toLocaleString() + " 开始，用时 " +
+      Math.max(0, Math.round((new Date(last.ended_at) - new Date(last.started_at)) / 1000)) + " 秒" +
+      (last.baseline ? "（本次仅建立基线）" : "");
+  } else {
+    $("lastScanLine").textContent = "尚无扫描记录。";
+  }
+  $("lrFound").textContent = last.found ?? 0;
+  $("lrNew").textContent = last.new ?? 0;
+  $("lrSent").textContent = last.sent ?? 0;
+  $("lrSkipped").textContent = last.skipped ?? 0;
+  $("lrFailed").textContent = last.failed ?? 0;
+
+  const err = (last.errors && last.errors.length) ? last.errors.join("\n") : (stats.last_error || "");
+  $("lrErr").hidden = !err;
+  $("lrErr").textContent = err;
+
   nextRunAt = st.next_run || null;
   $("nextPill").hidden = !nextRunAt;
   if (nextRunAt) $("nextRun").textContent = fmtCountdown(nextRunAt);
 
-  const lr = st.last_run || {};
-  if (lr.started_at) {
-    const took = lr.ended_at ? Math.max(1, Math.round((new Date(lr.ended_at) - new Date(lr.started_at)) / 1000)) : null;
-    $("lastRunHint").textContent = "Started " + fmtTime(lr.started_at) + (took ? " and finished in " + took + "s" : "");
-    $("lrFound").textContent = lr.found || 0;
-    $("lrNew").textContent = lr.new || 0;
-    $("lrSent").textContent = lr.sent || 0;
-    $("lrFailed").textContent = lr.failed || 0;
-  }
-  const errs = [];
-  if (lr.baseline) errs.push("Baseline scan: existing torrents were recorded, not posted.");
-  (lr.errors || []).slice(0, 6).forEach((e) => errs.push(e));
-  if (s.last_error) errs.push("Last error: " + s.last_error);
-  $("lrErr").style.display = errs.length ? "block" : "none";
-  $("lrErr").textContent = errs.join("  ·  ");
+  $("footInfo").textContent = "版本 " + (st.version || "dev");
+  $("aboutVersion").textContent = st.version || "dev";
 }
 
 function renderRecent(records) {
   const body = $("recentBody");
-  if (!records.length) {
-    body.innerHTML = '<tr><td colspan="4" class="empty">No data yet.</td></tr>';
+  if (!records || !records.length) {
+    body.innerHTML = '<tr><td colspan="4" class="empty">暂无数据。</td></tr>';
     return;
   }
-  body.innerHTML = records.slice(0, 8).map((r) =>
-    "<tr>" +
-      '<td class="t"><a href="' + esc(r.url) + '" target="_blank" rel="noopener noreferrer">' + esc(r.title) + "</a></td>" +
-      "<td>" + esc(sizeText(r)) + "</td>" +
-      "<td>" + statusOf(r) + "</td>" +
-      "<td>" + fmtTime(r.first_seen) + "</td>" +
-    "</tr>").join("");
+  body.innerHTML = records.map((r) => {
+    const title = r.url
+      ? '<a href="' + esc(r.url) + '" target="_blank" rel="noopener">' + esc(r.title) + "</a>"
+      : esc(r.title);
+    return "<tr><td class='title'>" + title + "</td><td>" + esc(sizeText(r)) +
+      "</td><td>" + statusOf(r) + "</td><td class='muted'>" + esc(fmtTime(r.first_seen)) + "</td></tr>";
+  }).join("");
 }
 
 function renderHistory(records) {
   const body = $("histBody");
-  if (!records.length) {
-    body.innerHTML = '<tr><td colspan="5" class="empty">No records yet.</td></tr>';
+  if (!records || !records.length) {
+    body.innerHTML = '<tr><td colspan="5" class="empty">暂无记录。</td></tr>';
     return;
   }
-  body.innerHTML = records.map((r) =>
-    "<tr>" +
-      '<td class="t"><a href="' + esc(r.url) + '" target="_blank" rel="noopener noreferrer">' + esc(r.title) + "</a>" +
-        (r.error ? '<div style="color:#ff8b8f;font-size:12px;margin-top:3px">' + esc(r.error) + "</div>" : "") +
-      "</td>" +
-      "<td>" + esc(r.category || "—") + "</td>" +
-      "<td>" + esc(sizeText(r)) + "</td>" +
-      "<td>" + statusOf(r) + "</td>" +
-      "<td>" + fmtTime(r.first_seen) + "</td>" +
-    "</tr>").join("");
+  body.innerHTML = records.map((r) => {
+    const title = r.url
+      ? '<a href="' + esc(r.url) + '" target="_blank" rel="noopener">' + esc(r.title) + "</a>"
+      : esc(r.title);
+    const when = r.sent_at ? fmtTime(r.sent_at) : fmtTime(r.first_seen);
+    return "<tr><td class='title'>" + title + "</td><td>" + tmdbOf(r) + "</td><td>" +
+      esc(sizeText(r)) + "</td><td>" + statusOf(r) + "</td><td class='muted'>" + esc(when) + "</td></tr>";
+  }).join("");
 }
 
 function renderLogs(lines) {
   const box = $("logBox");
-  if (!lines.length) { box.textContent = "No log output yet."; return; }
-  const atBottom = box.scrollTop + box.clientHeight >= box.scrollHeight - 40;
-  box.textContent = lines.map((l) => {
-    const d = new Date(l.time);
-    const ts = isNaN(d) ? "" : d.toLocaleTimeString();
-    return (ts ? ts + "  " : "") + String(l.message || "").replace(/\n+$/, "");
+  if (!lines || !lines.length) {
+    box.textContent = "暂无日志。";
+    return;
+  }
+  const atBottom = box.scrollTop + box.clientHeight >= box.scrollHeight - 30;
+  box.innerHTML = lines.map((l) => {
+    const t = new Date(l.time).toLocaleTimeString();
+    const cls = /error|failed|失败/i.test(l.message) ? "e" : "";
+    return '<span class="t">' + esc(t) + "</span> <span class='" + cls + "'>" + esc(l.message.trim()) + "</span>";
   }).join("\n");
   if (atBottom) box.scrollTop = box.scrollHeight;
 }
 
 async function loadState() {
-  try { renderState(await api("GET", "/api/state")); } catch (e) {}
+  const st = await api("GET", "/api/state");
+  renderState(st);
 }
+
 async function loadRecent() {
-  try { renderRecent((await api("GET", "/api/records?limit=8")).records || []); } catch (e) {}
+  const d = await api("GET", "/api/records?limit=8");
+  renderRecent(d.records);
 }
+
 async function loadHistory() {
-  const st = $("histStatus").value;
-  const d = await api("GET", "/api/records?limit=300" + (st ? "&status=" + st : ""));
-  renderHistory(d.records || []);
+  const status = $("histStatus").value;
+  const d = await api("GET", "/api/records?limit=200" + (status ? "&status=" + status : ""));
+  renderHistory(d.records);
 }
+
 async function loadLogs() {
-  try { renderLogs((await api("GET", "/api/logs")).lines || []); } catch (e) {}
+  const d = await api("GET", "/api/logs");
+  renderLogs(d.lines);
 }
-async function loadSettings() {
-  const d = await api("GET", "/api/settings");
-  META = d.meta || META;
-  renderMeta();
-  fillSettings(d.settings || {});
-}
+
+/* ------------------------------- 弹窗 ------------------------------- */
 
 function showModal(title, html) {
   $("modalTitle").textContent = title;
@@ -801,113 +1145,163 @@ function showModal(title, html) {
 }
 function closeModal() { $("modalBack").classList.remove("show"); }
 
+/* ------------------------------- 操作 ------------------------------- */
+
 async function doAction(btn, method, path, body, okMsg) {
   setBusy(btn, true);
   try {
     const d = await api(method, path, body);
-    if (okMsg) toast(okMsg, "", "ok");
+    toast(okMsg, d && d.detail ? d.detail : "", "ok");
     await loadState();
-    await loadRecent();
     return d;
   } catch (e) {
-    toast("Action failed", e.message, "err");
-    return null;
+    toast("操作失败", e.message, "err");
   } finally {
     setBusy(btn, false);
   }
 }
 
 async function checkNow(btn) {
-  setBusy(btn, true, "Scanning…");
+  setBusy(btn, true, "检查中…");
   try {
     const d = await api("POST", "/api/check");
-    const r = d.report || {};
-    if (!d.ok) {
-      toast("Scan failed", d.error || "unknown error", "err");
-    } else if (r.baseline) {
-      toast("Baseline created", "Recorded " + (r.found || 0) + " existing torrents. New posts will be forwarded from the next scan.", "ok");
+    if (d.ok) {
+      const r = d.report || {};
+      toast("检查完成",
+        "抓取 " + (r.found ?? 0) + " 条，新增 " + (r.new ?? 0) + " 条，推送 " +
+        (r.sent ?? 0) + " 条，跳过 " + (r.skipped ?? 0) + " 条，失败 " + (r.failed ?? 0) + " 条。",
+        "ok");
     } else {
-      toast("Scan complete", "Found " + (r.found || 0) + ", new " + (r.new || 0) + ", sent " + (r.sent || 0) + ", failed " + (r.failed || 0), "ok");
+      toast("检查失败", d.error || "未知错误", "err");
     }
-    await loadState();
-    await loadRecent();
-    await loadHistory().catch(() => {});
+    await Promise.all([loadState(), loadRecent(), loadHistory()]);
+    await loadLogs();
   } catch (e) {
-    toast("Scan failed", e.message, "err");
+    toast("检查失败", e.message, "err");
   } finally {
     setBusy(btn, false);
   }
 }
 
 async function testScrape(btn) {
-  setBusy(btn, true, "Reading…");
+  setBusy(btn, true, "测试中…");
   try {
-    const d = await api("POST", "/api/test");
-    if (!d.ok) {
-      showModal("Scrape test failed",
-        '<p style="color:#ff8b8f">' + esc(d.error) + "</p>" +
-        '<p style="color:var(--muted);font-size:13px">If this mentions a Cloudflare challenge, refresh the ' +
-        '<span class="kbd">cf_clearance</span> cookie from a browser on the same network as this container.</p>');
-      return;
-    }
+    const d = await api("POST", "/api/test?sample=10");
+    if (!d.ok) { toast("抓取测试失败", d.error || "未知错误", "err"); return; }
     const r = d.result || {};
-    let html = "<p>Read <b>" + (r.fetched || 0) + "</b> torrents from ext.to. <b>" + (r.matched || 0) +
-      "</b> matched the current filters, of which <b>" + (r.unseen || 0) + "</b> are new to this instance.</p>";
-    if (r.baseline) {
-      html += '<p style="color:#f6c756;font-size:13px">History is empty, so the next scan builds a baseline instead of posting.</p>';
-    }
-    const items = (r.items || []).slice(0, 12);
-    if (items.length) {
-      html += '<div class="scroll" style="margin-top:12px"><table class="data"><thead><tr><th>Title</th><th>Size</th><th>Category</th></tr></thead><tbody>' +
-        items.map((i) => '<tr><td class="t">' + esc(i.Title) + "</td><td>" + esc(i.Size || "—") + "</td><td>" + esc(i.Category || "—") + "</td></tr>").join("") +
-        "</tbody></table></div>";
-    }
-    if (r.preview) {
-      html += '<h4 style="margin:18px 0 8px;font-size:14px">Caption preview</h4><div class="cap">' + r.preview + "</div>";
-    }
-    showModal("Scrape test", html);
+    const rows = (r.items || []).map((it) =>
+      "<tr><td>" + esc(it.Title) + "</td><td>" + esc(it.Size || "—") +
+      "</td><td>" + esc(it.Category || "—") + "</td></tr>").join("");
+    showModal("抓取测试结果",
+      "<p class='hint'>抓取 <b>" + (r.fetched ?? 0) + "</b> 条，符合过滤规则 <b>" +
+      (r.matched ?? 0) + "</b> 条，其中未推送过 <b>" + (r.unseen ?? 0) + "</b> 条。" +
+      (r.baseline ? "首次扫描只会建立基线。" : "") + "</p>" +
+      (rows ? "<div class='tw'><table><thead><tr><th>标题</th><th>大小</th><th>分类</th></tr></thead><tbody>" +
+        rows + "</tbody></table></div>" : "<div class='empty'>没有符合规则的条目。</div>") +
+      (r.preview ? "<h3 style='margin:18px 0 8px;font-size:14px'>消息预览</h3><div class='cap'>" +
+        esc(r.preview) + "</div>" : ""));
   } catch (e) {
-    toast("Scrape test failed", e.message, "err");
+    toast("抓取测试失败", e.message, "err");
   } finally {
     setBusy(btn, false);
   }
 }
 
 async function testTelegram(btn) {
-  setBusy(btn, true, "Connecting…");
+  setBusy(btn, true, "测试中…");
   try {
     const d = await api("POST", "/api/test-telegram", collectSettings());
-    if (d.ok) toast("Telegram OK", d.detail || "", "ok");
-    else toast("Telegram failed", (d.detail ? d.detail + " — " : "") + (d.error || ""), "err");
+    if (d.ok) toast("Telegram 正常", d.detail || "", "ok");
+    else toast("Telegram 测试失败", (d.error || "") + (d.detail ? "\n" + d.detail : ""), "err");
   } catch (e) {
-    toast("Telegram failed", e.message, "err");
+    toast("Telegram 测试失败", e.message, "err");
   } finally {
     setBusy(btn, false);
   }
 }
 
-function switchTab(name) {
-  Array.prototype.forEach.call(document.querySelectorAll("nav.tabs button"), (b) => {
-    b.classList.toggle("active", b.dataset.tab === name);
-  });
-  Array.prototype.forEach.call(document.querySelectorAll(".tabpane"), (p) => {
-    p.classList.toggle("active", p.id === "tab-" + name);
-  });
-  if (name === "history") loadHistory().catch(() => {});
-  if (name === "logs") loadLogs();
+async function testTMDB(btn) {
+  setBusy(btn, true, "测试中…");
+  try {
+    const d = await api("POST", "/api/test-tmdb", {
+      tmdb_key: $("setTmdbKey").value.trim(),
+      tmdb_lang: $("setTmdbLang").value.trim()
+    });
+    if (d.ok) toast("TMDB 正常", d.detail || "", "ok");
+    else toast("TMDB 测试失败", d.error || "", "err");
+  } catch (e) {
+    toast("TMDB 测试失败", e.message, "err");
+  } finally {
+    setBusy(btn, false);
+  }
 }
+
+async function runLookup(ev) {
+  ev.preventDefault();
+  const btn = ev.target.querySelector("button[type=submit]");
+  setBusy(btn, true, "解析中…");
+  try {
+    const d = await api("POST", "/api/tmdb-lookup", {
+      title: $("lookupTitle").value.trim(),
+      imdb_id: $("lookupIMDb").value.trim()
+    });
+    const p = d.parsed || {};
+    let html = "<div class='metricrow'>" +
+      "<div class='metric'><div class='k'>解析标题</div><div class='v' style='font-size:15px'>" + esc(p.title || "—") + "</div></div>" +
+      "<div class='metric'><div class='k'>年份</div><div class='v' style='font-size:15px'>" + (p.year || "—") + "</div></div>" +
+      "<div class='metric'><div class='k'>类型</div><div class='v' style='font-size:15px'>" + (p.kind || "未判定") + "</div></div>" +
+      "<div class='metric'><div class='k'>季/集</div><div class='v' style='font-size:15px'>" +
+      (p.season ? "S" + p.season : "—") + " / " + (p.episode ? "E" + p.episode : "—") + "</div></div>" +
+      (p.prefix ? "<div class='metric'><div class='k'>前缀标签</div><div class='v' style='font-size:15px'>" + esc(p.prefix) + "</div></div>" : "") +
+      "</div>";
+    if (d.ok && d.entry) {
+      const e = d.entry;
+      html += "<h3 style='margin:18px 0 8px;font-size:14px'>TMDB 匹配</h3>" +
+        "<div class='cap'>" + esc(e.title) + (e.year ? " (" + e.year + ")" : "") + "\n" +
+        esc(e.type) + " · ID " + e.id + " · 评分 " + (e.rating || 0).toFixed(1) +
+        "（" + (e.vote_count || 0) + " 票）· 匹配方式 " + esc(e.matched_by) +
+        "\nhttps://www.themoviedb.org/" + esc(e.type) + "/" + e.id + "</div>";
+    } else {
+      html += "<div class='warnbox' style='margin-top:16px'>没有匹配到 TMDB 条目：" +
+        esc(d.error || "未找到") + "</div>";
+    }
+    $("lookupOut").innerHTML = html;
+    $("lookupOut").hidden = false;
+  } catch (e) {
+    toast("解析失败", e.message, "err");
+  } finally {
+    setBusy(btn, false);
+  }
+}
+
+/* ------------------------------- 导航 ------------------------------- */
+
+function showPane(name) {
+  currentPane = name;
+  Array.prototype.forEach.call(document.querySelectorAll("nav.menu button"), (b) => {
+    b.classList.toggle("active", b.dataset.pane === name);
+  });
+  Array.prototype.forEach.call(document.querySelectorAll(".pane"), (p) => {
+    p.hidden = p.id !== "pane-" + name;
+  });
+  if (name === "records") loadHistory().catch(() => {});
+  if (name === "logs") loadLogs();
+  if (name === "overview") loadRecent().catch(() => {});
+}
+
+/* ------------------------------- 绑定 ------------------------------- */
 
 function wire() {
   $("loginForm").addEventListener("submit", async (ev) => {
     ev.preventDefault();
     const btn = ev.target.querySelector("button[type=submit]");
-    setBusy(btn, true, "Signing in…");
+    setBusy(btn, true, "登录中…");
     try {
       await api("POST", "/api/login", { user: $("loginUser").value, password: $("loginPass").value });
       $("loginPass").value = "";
       await boot();
     } catch (e) {
-      toast("Sign in failed", e.message, "err");
+      toast("登录失败", e.message, "err");
     } finally {
       setBusy(btn, false);
     }
@@ -918,49 +1312,69 @@ function wire() {
     showLogin();
   };
 
-  Array.prototype.forEach.call(document.querySelectorAll("nav.tabs button"), (b) => {
-    b.onclick = () => switchTab(b.dataset.tab);
-  });
-
-  $("btnStart").onclick = (e) => doAction(e.target, "POST", "/api/start", undefined, "Monitoring started");
-  $("btnStop").onclick = (e) => doAction(e.target, "POST", "/api/stop", undefined, "Monitoring stopped");
-  $("btnCheck").onclick = (e) => checkNow(e.target);
-  $("btnTest").onclick = (e) => testScrape(e.target);
-  $("btnTestTg").onclick = (e) => testTelegram(e.target);
-  $("btnTg2").onclick = (e) => testTelegram(e.target);
-
-  $("btnReload").onclick = () => loadSettings()
-    .then(() => toast("Settings reloaded", "Unsaved changes were discarded.", "ok"))
-    .catch((e) => toast("Reload failed", e.message, "err"));
-
-  $("btnClear").onclick = async () => {
-    if (!confirm("Delete all tracked history?\n\nThe next scan rebuilds a baseline instead of posting, so no backlog is sent to Telegram.")) return;
-    await doAction($("btnClear"), "POST", "/api/clear", undefined, "History cleared");
-    await loadHistory().catch(() => {});
+  $("menu").onclick = (ev) => {
+    const b = ev.target.closest("button[data-pane]");
+    if (b) showPane(b.dataset.pane);
   };
 
-  $("settingsForm").addEventListener("submit", async (ev) => {
-    ev.preventDefault();
-    const btn = ev.target.querySelector("button[type=submit]");
-    setBusy(btn, true, "Saving…");
-    try {
-      const d = await api("PUT", "/api/settings", collectSettings());
-      fillSettings(d.settings || {});
-      toast("Settings saved", "", "ok");
-      await loadState();
-    } catch (e) {
-      toast("Could not save", e.message, "err");
-    } finally {
-      setBusy(btn, false);
-    }
-  });
+  $("btnRefresh").onclick = () => {
+    loadState().catch((e) => toast("刷新失败", e.message, "err"));
+    loadRecent().catch(() => {});
+    loadSettings().catch(() => {});
+  };
 
-  $("btnHistReload").onclick = () => loadHistory().catch((e) => toast("Refresh failed", e.message, "err"));
+  $("btnStart").onclick = () => doAction($("btnStart"), "POST", "/api/start", undefined, "监听已启动");
+  $("btnStop").onclick = () => doAction($("btnStop"), "POST", "/api/stop", undefined, "监听已停止");
+  $("btnCheck").onclick = (e) => checkNow(e.target);
+  $("btnTest").onclick = (e) => testScrape(e.target);
+  $("btnTestSrc").onclick = (e) => testScrape(e.target);
+  $("btnTestTg").onclick = (e) => testTelegram(e.target);
+  $("btnTg2").onclick = (e) => testTelegram(e.target);
+  $("btnTestTmdb").onclick = (e) => testTMDB(e.target);
+
+  $("btnReload").onclick = () => loadSettings()
+    .then(() => toast("已重新载入", "未保存的修改已丢弃。", "ok"))
+    .catch((e) => toast("载入失败", e.message, "err"));
+
+  $("btnUseDefault").onclick = () => { $("setTemplate").value = META.default_template || ""; };
+  $("btnUseTmdb").onclick = () => { $("setTemplate").value = META.tmdb_template || ""; };
+
+  $("lookupForm").addEventListener("submit", runLookup);
+
+  $("btnHistReload").onclick = () => loadHistory().catch((e) => toast("刷新失败", e.message, "err"));
   $("histStatus").onchange = () => loadHistory().catch(() => {});
   $("btnLogsReload").onclick = () => loadLogs();
   $("modalClose").onclick = closeModal;
   $("modalBack").onclick = (e) => { if (e.target === $("modalBack")) closeModal(); };
   document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeModal(); });
+
+  $("btnClear").onclick = async () => {
+    if (!confirm("确定清空全部跟踪记录？\n\n下次扫描只会重建基线，不会补发历史种子。")) return;
+    await doAction($("btnClear"), "POST", "/api/clear", undefined, "记录已清空");
+    await loadHistory().catch(() => {});
+  };
+
+  // The three forms share one settings payload; each saves the whole object so
+  // fields edited on another page are not silently reset.
+  const saveSettings = async (ev, label) => {
+    ev.preventDefault();
+    const btn = ev.target.querySelector("button[type=submit]");
+    setBusy(btn, true, "保存中…");
+    try {
+      const d = await api("PUT", "/api/settings", collectSettings());
+      fillSettings(d.settings || {});
+      $("setAdminPass").value = "";
+      toast("已保存", label || "", "ok");
+      await loadState();
+    } catch (e) {
+      toast("保存失败", e.message, "err");
+    } finally {
+      setBusy(btn, false);
+    }
+  };
+  $("settingsForm").addEventListener("submit", (e) => saveSettings(e, "抓取设置已生效。"));
+  $("telegramForm").addEventListener("submit", (e) => saveSettings(e, "推送设置已生效。"));
+  $("accountForm").addEventListener("submit", (e) => saveSettings(e, "下次登录请使用新凭据。"));
 }
 
 async function boot() {
@@ -971,6 +1385,7 @@ async function boot() {
     return;
   }
   showApp();
+  $("aboutAddr").textContent = location.origin;
   await Promise.all([loadState(), loadRecent()]);
   await loadHistory().catch(() => {});
   await loadLogs();
@@ -980,13 +1395,13 @@ wire();
 
 setInterval(() => {
   if ($("app").hidden) return;
-  loadState();
-  loadRecent();
+  loadState().catch(() => {});
+  if (currentPane === "overview") loadRecent().catch(() => {});
 }, 5000);
 
 setInterval(() => {
-  if ($("app").hidden || !$("logsAuto").checked) return;
-  if ($("tab-logs").classList.contains("active")) loadLogs();
+  if ($("app").hidden || currentPane !== "logs" || !$("logsAuto").checked) return;
+  loadLogs();
 }, 5000);
 
 setInterval(() => {
