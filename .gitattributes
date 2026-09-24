@@ -1,0 +1,14 @@
+# Normalise line endings so builds behave the same on Windows and Linux.
+* text=auto eol=lf
+
+# These must always use LF regardless of the platform that checks them out:
+# a CRLF shell script fails to execute in the Alpine runtime image, and CRLF
+# in YAML/Makefiles can break tooling.
+*.sh text eol=lf
+Dockerfile text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+*.go text eol=lf
+
+# Fixtures are byte-compared by tests, so never rewrite them.
+internal/scrape/testdata/*.html -text
