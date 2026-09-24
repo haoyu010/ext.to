@@ -440,18 +440,33 @@ func SearchTitles(raw string) []string {
 	// isolated), and each is shorter than its parent, so this terminates.
 	var add func(string)
 	add = func(s string) {
-		s = strings.TrimSpace(strings.Trim(s, "-–—_.·:;,[]【】"))
+		// Brackets are deliberately not in the trim set: trimming them here
+		// unbalances a name such as "名称 [01-12][1080p]" and the group can no
+		// longer be recognised, which leaves a term that matches nothing.
+		s = strings.TrimSpace(strings.Trim(s, "-–—_.·:;,"))
 		if s == "" {
 			return
 		}
-		// A bracketed fragment left over from splitting is noise, not a title.
-		// The group may still be hiding the name ("[绿茶字幕组] 再见拉拉"), so
-		// the group is removed and the remainder offered instead of dropping
-		// the candidate outright.
+		// A bracketed group is metadata, not part of a name, and a search term
+		// that still carries one matches nothing. Groups are removed wherever
+		// they sit, so a prefix, a suffix or both are handled the same way:
+		// without this, "[喵萌奶茶屋] 时光代理人 第三季 [01-12][1080p]" keeps the
+		// trailing episode range and resolution and resolves to nothing.
+		//
+		// The removal is not always a title. A name that is nothing but groups
+		// leaves no text at all, and a group stack leaves only the release's
+		// own tail ("[BDMV][…][桃源暗鬼 / Tougen Anki][JPN]-YE" -> "-YE"),
+		// which must never be searched: it once resolved a release to an
+		// unrelated film whose name happened to be the tail.
 		if strings.ContainsAny(s, "[]【】") {
-			if stripped := stripLeadingGroups(s); stripped != s && stripped != "" {
-				add(stripped)
+			stripped := stripBracketGroups(s)
+			// A stray bracket with no partner cannot be cleaned, and a term
+			// containing it matches nothing, so it is not offered.
+			if stripped == s || stripped == "" || isDanglingTail(stripped) ||
+				(!hasHan(stripped) && len([]rune(stripped)) < minLatinFragment) {
+				return
 			}
+			add(stripped)
 			return
 		}
 		if releaseTag[strings.ToLower(s)] {
@@ -605,23 +620,6 @@ func hasHan(s string) bool {
 	return false
 }
 
-// reSequelTail matches a title and the sequel marker a release appends to it,
-// with the title captured in group 1. TMDB stores the work without the marker,
-// so the captured form is offered as an extra candidate: the release is
-// "幼女战记II" or "碧蓝之海3" while the entry is "幼女战记" and "碧蓝之海".
-//
-// The marker must be its own token, either detached ("Clevatess II", "Part 2")
-// or glued straight onto a Han character ("碧蓝之海3"). Requiring that is what
-// stops the pattern from eating a letter off an ordinary word: "Youjo Senki"
-// and "Shitai" both end in "i", and a looser rule would turn them into "Youjo
-// Senk" and "Shita", searching for titles that do not exist and burying the
-// real candidate behind them.
-//
-// The group is greedy so that the longest title wins, which keeps the glued
-// form from splitting in the wrong place: "碧蓝之海3" must yield "碧蓝之海",
-// not "碧蓝之".
-var reSequelTail = regexp.MustCompile(`(?is)^(.+?)(?:\s+(?:part\s*\d+|season\s*\d+|chapter\s*\d+|\d{1,2}|[ivx]{1,5})|(?:\p{Han})(?:\d{1,2}|[ivx]{1,5})|\s*第\s*[0-9一二三四五六七八九十]+\s*[季部期])$`)
-
 // stripSequelMarker removes a trailing sequel marker. It returns "" when
 // nothing was removed or when the remainder is too short to be a title.
 func stripSequelMarker(s string) string {
@@ -633,6 +631,8 @@ func stripSequelMarker(s string) string {
 		rest = m[1]
 	} else if m := reSequelGlued.FindStringSubmatch(s); m != nil {
 		rest = m[1] + m[2]
+	} else if m := reSequelSeason.FindStringSubmatch(s); m != nil {
+		rest = m[1]
 	}
 	rest = strings.TrimSpace(strings.Trim(rest, " -–—_.·:;,"))
 	if len([]rune(rest)) < 2 || isNumericFragment(rest) {
@@ -653,6 +653,20 @@ var reSequelDetached = regexp.MustCompile(`(?s)^(.+?)\s+(?:(?i:part\s*\d+|season
 // reSequelGlued matches a marker written straight onto a Han character, so the
 // title keeps that character (group 2) and loses only the marker.
 var reSequelGlued = regexp.MustCompile(`(?s)^(.+?)(\p{Han})(?:\d{1,2}|[IVX]{1,5})$`)
+
+// reSequelSeason matches the Chinese season marker a release appends to a
+// name, detached ("一人之下 第六季") or glued ("一人之下第六季").
+//
+// TMDB files the work without the marker: the entry is "一人之下" and there is
+// no entry called "一人之下 第六季", so searching the name as published finds
+// nothing. This is the shape mainland animation is published in, which makes
+// it the difference between a 国漫 release resolving and being dropped.
+//
+// The marker is not covered by either pattern above: reSequelDetached only
+// accepts Arabic digits and Latin words after the separator, and reSequelGlued
+// requires the marker to be digits or roman numerals. A season written as
+// 第六季 matched neither, so the name was searched whole and never resolved.
+var reSequelSeason = regexp.MustCompile(`(?s)^(.+?)\s*第\s*[0-9０-９一二三四五六七八九十百]+\s*[季部期]$`)
 
 // reDubbingMarker matches a trailing dub or subtitle note.
 //
@@ -764,6 +778,27 @@ func stripLeadingGroups(s string) string {
 		}
 		s = strings.TrimSpace(s[len(m):])
 	}
+}
+
+// reAnyBracketGroup matches one bracketed group anywhere in a release name.
+var reAnyBracketGroup = regexp.MustCompile(`[\[【][^\]】]{0,120}[\]】]`)
+
+// stripBracketGroups removes every bracketed group from a release name, leaving
+// the text between them.
+//
+// A bracketed suffix is as common as a bracketed prefix: "[喵萌奶茶屋] 时光代理人
+// 第三季 [01-12][1080p]" carries the episode range and the resolution in
+// groups at the end, and Parse keeps them because it cuts at a structural
+// marker and there is none. Every candidate derived from the name then still
+// contains a bracket, and a search term with a bracket matches nothing, so the
+// release resolves to nothing at all.
+//
+// The caller has to check the result: for a name that is nothing but groups
+// ("[BDMV][…][JPN]-YE") the removal leaves the release's own tail, which must
+// not be searched.
+func stripBracketGroups(s string) string {
+	s = reAnyBracketGroup.ReplaceAllString(s, " ")
+	return strings.Join(strings.Fields(s), " ")
 }
 
 // isNumericFragment reports whether a fragment carries no letters at all, which

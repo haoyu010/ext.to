@@ -305,6 +305,68 @@ func TestSearchTitlesSplitScripts(t *testing.T) {
 	}
 }
 
+// A season marker written in Chinese is not part of the name TMDB stores: the
+// entry is "一人之下" and no entry is called "一人之下 第六季", so searching the
+// name as published finds nothing and a Chinese animation release is dropped.
+//
+// This is the shape mainland animation ships in, and neither of the existing
+// marker patterns recognised it: one accepts only Arabic digits and Latin
+// words after the separator, the other only digits and roman numerals.
+func TestSearchTitlesStripChineseSeasonMarker(t *testing.T) {
+	cases := []struct {
+		in   string
+		want string
+	}{
+		{"一人之下 第六季", "一人之下"},
+		{"一人之下第六季", "一人之下"},
+		{"吞噬星空 第2季", "吞噬星空"},
+		{"斗罗大陆 第10部", "斗罗大陆"},
+	}
+	for _, tc := range cases {
+		if got := stripSequelMarker(tc.in); got != tc.want {
+			t.Errorf("stripSequelMarker(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+	// A name that merely contains the character must survive: only a season
+	// marker at the very end is removed.
+	for _, in := range []string{"第六季", "一人之下", "第十九层空间", "第五元素 电影"} {
+		if got := stripSequelMarker(in); got != "" {
+			t.Errorf("stripSequelMarker(%q) = %q, want no change", in, got)
+		}
+	}
+}
+
+// Bracketed groups are metadata wherever they sit. A trailing group such as an
+// episode range or a resolution cannot be left in a search term: TMDB matches
+// nothing against "名称 [01-12][1080p]", so the release resolves to nothing at
+// all even though its title was parsed correctly.
+func TestSearchTitlesStripTrailingGroups(t *testing.T) {
+	got := SearchTitles("[喵萌奶茶屋] 时光代理人 第三季 [01-12][1080p]")
+	found := map[string]bool{}
+	for _, g := range got {
+		found[g] = true
+	}
+	if !found["时光代理人"] {
+		t.Errorf("candidates %v are missing the title once the trailing groups go", got)
+	}
+	for _, g := range got {
+		if strings.ContainsAny(g, "[]【】") {
+			t.Errorf("candidate %q still carries a bracket", g)
+		}
+	}
+}
+
+// Removing every group from a name that is nothing but groups leaves the
+// release's own tail, which must never be searched: it is not a title, and a
+// work that happens to share the tail's spelling would be matched wrongly.
+func TestSearchTitlesDoNotSearchGroupStackTail(t *testing.T) {
+	for _, g := range SearchTitles("[BDMV][251008-260325][桃源暗鬼 / Tougen Anki][BDMV][Vol.1-6 FIN][JPN]-YE") {
+		if Normalize(g) == "ye" {
+			t.Errorf("candidate %q is the stripped tail, not a title", g)
+		}
+	}
+}
+
 // A detached episode number marks a series. Unrecognised, the release is
 // searched as a film and can bind to a same-named film entry, which then
 // decides the category from the wrong genre set.
