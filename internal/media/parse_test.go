@@ -1,6 +1,9 @@
 package media
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 // releaseNames are real titles taken from ext.to listing pages. They are the
 // best regression corpus available because they include the punctuation and
@@ -111,5 +114,100 @@ func TestNormalize(t *testing.T) {
 func TestParseEmpty(t *testing.T) {
 	if got := Parse("   "); got.Title != "" {
 		t.Errorf("Title = %q, want empty", got.Title)
+	}
+}
+
+// "Season 2" and "S02" are two alternatives in one pattern, so exactly one
+// capture group is populated and the other reports -1. Reading the unset one
+// slices at -1 and panics, which would take the whole forwarder down on a
+// single release name.
+func TestParseSeasonSpellingsDoNotPanic(t *testing.T) {
+	cases := []struct {
+		in     string
+		season int
+		title  string
+	}{
+		{"Show Season 2 1080p", 2, "Show"},
+		{"Some Show Season 3 WEB-DL", 3, "Some Show"},
+		{"Show S02 1080p", 2, "Show"},
+	}
+	for _, tc := range cases {
+		got := Parse(tc.in)
+		if got.Season != tc.season {
+			t.Errorf("Parse(%q).Season = %d, want %d", tc.in, got.Season, tc.season)
+		}
+		if got.Title != tc.title {
+			t.Errorf("Parse(%q).Title = %q, want %q", tc.in, got.Title, tc.title)
+		}
+		if got.Kind != KindTV {
+			t.Errorf("Parse(%q).Kind = %q, want tv", tc.in, got.Kind)
+		}
+	}
+}
+
+// Chinese animation is published with 第14话 instead of S01E02. The marker has
+// to be recognised as an episode and removed, or the title never matches.
+func TestParseChineseEpisodeMarker(t *testing.T) {
+	got := Parse("[Doomdos] - 罗拉航海日记 - 第24话 - [1080p BILIBILI COM WEB-DL]")
+	if got.Kind != KindTV {
+		t.Errorf("Kind = %q, want tv", got.Kind)
+	}
+	if strings.Contains(got.Title, "第24话") {
+		t.Errorf("Title = %q, want the episode marker removed", got.Title)
+	}
+
+	// A range marker such as 第01-12集 marks a batch of episodes.
+	if batch := Parse("碧蓝之海3 Grand Blue Dreaming! S3 第01-12集 GB_CN AV1_opus 1080p"); batch.Kind != KindTV {
+		t.Errorf("Kind = %q, want tv for a batch release", batch.Kind)
+	}
+}
+
+// SearchTitles feeds TMDB the alternatives a fansub release lists. A fragment
+// that is only a number must never be offered: TMDB has works literally named
+// "12", so searching for the episode number resolves a release to a completely
+// unrelated series. A wrong match is worse than no match, because it decides
+// the category and therefore whether the release is forwarded.
+func TestSearchTitlesSkipEpisodeNumbers(t *testing.T) {
+	for _, got := range SearchTitles("[喵萌奶茶屋&LoliHouse] 与你相恋到生命尽头 / Kimi ga Shinu made Koi wo Shitai - 12") {
+		if isNumericFragment(got) {
+			t.Errorf("SearchTitles offered the numeric fragment %q", got)
+		}
+	}
+}
+
+// The several names a release lists must each be offered, because no single
+// cleaned form matches what TMDB stores.
+func TestSearchTitlesOfferAlternatives(t *testing.T) {
+	got := SearchTitles("[Shridhuu][1080p] GuAn / 一斩苍穹 / Yi Zhan Cangqiong - S01E10")
+	found := map[string]bool{}
+	for _, g := range got {
+		found[g] = true
+	}
+	for _, want := range []string{"一斩苍穹", "GuAn", "Yi Zhan Cangqiong"} {
+		if !found[want] {
+			t.Errorf("SearchTitles %v is missing %q", got, want)
+		}
+	}
+}
+
+// Every candidate must be usable as a search term: a leftover bracket or a
+// bare resolution tag makes the request match nothing.
+func TestSearchTitlesAreClean(t *testing.T) {
+	for _, in := range []string{
+		"[Shridhuu][1080p] GuAn / 一斩苍穹 / Yi Zhan Cangqiong - S01E10",
+		"[喵萌奶茶屋&LoliHouse] 与你相恋到生命尽头 / Kimi ga Shinu made Koi wo Shitai - 12 [WebRip 1080p HEVC-10bit AAC]",
+		"[Doomdos] - 罗拉航海日记 - 第24话 - [1080p BILIBILI COM WEB-DL]",
+	} {
+		for _, got := range SearchTitles(in) {
+			if strings.ContainsAny(got, "[]【】") {
+				t.Errorf("candidate %q for %q still carries brackets", got, in)
+			}
+			if releaseTag[strings.ToLower(got)] {
+				t.Errorf("candidate %q for %q is a release tag", got, in)
+			}
+			if isNumericFragment(got) {
+				t.Errorf("candidate %q for %q is numeric", got, in)
+			}
+		}
 	}
 }

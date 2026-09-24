@@ -165,8 +165,13 @@ type Settings struct {
 // supplies Telegram credentials.
 func Default() Settings {
 	return Settings{
-		UserAgent:       DefaultUserAgent,
-		Categories:      []int{CatMovies, CatTV},
+		UserAgent: DefaultUserAgent,
+		// The tracker files Chinese animation under 动漫, not under 剧集, so
+		// 剧集 alone cannot deliver the 国漫 the default rules are written to
+		// keep. The shipped defaults have to be coherent with each other, or a
+		// fresh install looks like a broken filter instead of a wrong category
+		// selection. Movies are left out because no default rule keeps them.
+		Categories:      []int{CatTV, CatAnime},
 		Age:             0,
 		MaxPages:        2,
 		Template:        DefaultTemplate,

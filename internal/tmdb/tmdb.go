@@ -153,7 +153,7 @@ func (c *Client) Resolve(ctx context.Context, imdbID, releaseName, canonicalTitl
 	}
 
 	var lastErr error = ErrNoMatch
-	for _, title := range candidateTitles(canonicalTitle, parsed.Title) {
+	for _, title := range candidateTitles(canonicalTitle, releaseName) {
 		e, err := c.byTitle(ctx, title, parsed)
 		if err == nil {
 			return e, nil
@@ -171,10 +171,16 @@ func (c *Client) Resolve(ctx context.Context, imdbID, releaseName, canonicalTitl
 // candidateTitles returns the titles to search, in order, skipping blanks and
 // duplicates. Comparison folds case and punctuation so a canonical title that
 // only differs cosmetically does not trigger a second request.
-func candidateTitles(canonical, fromRelease string) []string {
+//
+// The canonical title comes first because, when the page states one, it is the
+// title TMDB itself is most likely to store. The release-derived candidates
+// follow, because Chinese animation is published as
+// "[字幕组] 中文名 / Romaji / English - 第14话" and no single cleaned form of
+// that matches: each alternative has to be offered in turn.
+func candidateTitles(canonical, releaseName string) []string {
 	var out []string
 	seen := map[string]bool{}
-	for _, t := range []string{canonical, fromRelease} {
+	for _, t := range append([]string{canonical}, media.SearchTitles(releaseName)...) {
 		t = strings.TrimSpace(t)
 		if t == "" {
 			continue

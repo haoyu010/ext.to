@@ -95,12 +95,18 @@ func TestResolveStopsAtCanonicalTitle(t *testing.T) {
 }
 
 func TestCandidateTitles(t *testing.T) {
-	got := candidateTitles("The Long Watch", "The.Long.Watch.2026")
-	if len(got) != 2 {
-		t.Fatalf("got %v, want two candidates", got)
+	got := candidateTitles("The Long Watch", "The.Long.Watch.2026.1080p")
+	if len(got) != 1 {
+		t.Fatalf("got %v, want the release title folded into the canonical one", got)
 	}
 	if got[0] != "The Long Watch" {
 		t.Errorf("first candidate = %q, want the canonical title", got[0])
+	}
+
+	// A release title that adds nothing to the canonical one is not retried:
+	// the search would repeat what the first attempt already did.
+	if got := candidateTitles("The Long Watch", "The Long Watch"); len(got) != 1 {
+		t.Errorf("got %v, want one candidate", got)
 	}
 
 	// A canonical title that only differs in punctuation must not be retried.
@@ -114,6 +120,36 @@ func TestCandidateTitles(t *testing.T) {
 	}
 	if got := candidateTitles("  Only Canonical  ", ""); len(got) != 1 || got[0] != "Only Canonical" {
 		t.Errorf("got %v, want the trimmed canonical title", got)
+	}
+}
+
+// Chinese animation is published as "[字幕组] 中文名 / Romaji / English - 第14话".
+// No single cleaned form of that matches TMDB, so the alternatives inside the
+// release name have to be offered as separate candidates.
+func TestCandidateTitlesIncludeFansubAlternatives(t *testing.T) {
+	got := candidateTitles("", "[Shridhuu][1080p] GuAn / 一斩苍穹 / Yi Zhan Cangqiong - S01E10")
+	found := map[string]bool{}
+	for _, g := range got {
+		found[g] = true
+	}
+	for _, want := range []string{"一斩苍穹", "GuAn", "Yi Zhan Cangqiong"} {
+		if !found[want] {
+			t.Errorf("candidates %v are missing %q", got, want)
+		}
+	}
+	if len(got) < 2 {
+		t.Fatalf("got %v, want the alternatives to be tried", got)
+	}
+}
+
+// A name carrying a Chinese episode marker is a series, and the marker must not
+// survive into the search title.
+func TestCandidateTitlesDropChineseEpisodeMarker(t *testing.T) {
+	got := candidateTitles("", "[Doomdos] - 罗拉航海日记 - 第24话 [1080p BILIBILI COM WEB-DL]")
+	for _, g := range got {
+		if strings.Contains(g, "第24话") || strings.Contains(g, "第 24 话") {
+			t.Errorf("candidate %q still carries the episode marker", g)
+		}
 	}
 }
 

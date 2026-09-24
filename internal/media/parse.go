@@ -72,6 +72,11 @@ var reSeasonEpisode = regexp.MustCompile(`(?i)(?:^|\s)S(\d{1,2})[\s._-]?E(\d{1,3
 // A season with no episode: S03, Season 3.
 var reSeasonOnly = regexp.MustCompile(`(?i)(?:^|\s)(?:S(\d{1,2})|Season[\s._-]?(\d{1,2}))(?:[\s]|$)`)
 
+// A Chinese episode marker: 第14话, 第 14 話, 第01-12集. Fansub releases of
+// Chinese animation mark episodes this way instead of with S01E02, and without
+// this the title keeps the marker and matches nothing.
+var reChineseEpisode = regexp.MustCompile(`第\s*\d{1,4}(?:\s*[-~]\s*\d{1,4})?\s*[话話集回]`)
+
 // 1x02 style markers.
 var reNxN = regexp.MustCompile(`(?:^|\s)(\d{1,2})x(\d{2})(?:\s|$)`)
 
@@ -145,11 +150,20 @@ func Parse(raw string) Result {
 		res.Kind = KindTV
 	} else if loc := reSeasonOnly.FindStringSubmatchIndex(s); loc != nil {
 		cut = min(cut, loc[0])
-		season := s[loc[2]:loc[3]]
-		if loc[4] >= 0 {
-			season = s[loc[4]:loc[5]]
+		// The pattern has two alternatives, so exactly one of the two capture
+		// groups is populated and the other reports -1. Reading the wrong one
+		// slices at -1 and panics, which is why the index is checked rather
+		// than assumed: "Season 2" fills the second group and leaves the first
+		// unset, the opposite of "S02".
+		if loc[2] >= 0 {
+			res.Season, _ = strconv.Atoi(s[loc[2]:loc[3]])
+		} else if loc[4] >= 0 {
+			res.Season, _ = strconv.Atoi(s[loc[4]:loc[5]])
 		}
-		res.Season, _ = strconv.Atoi(season)
+		res.Kind = KindTV
+	} else if loc := reChineseEpisode.FindStringSubmatchIndex(s); loc != nil {
+		// A fansub episode marker means a series, even with no season number.
+		cut = min(cut, loc[0])
 		res.Kind = KindTV
 	}
 
@@ -343,4 +357,105 @@ func min(a, b int) int {
 		return a
 	}
 	return b
+}
+
+// reAltSeparator splits the several names a fansub release lists for one work.
+// Chinese animation is published as "中文名 / Romaji / English", so the full
+// string matches nothing and each alternative has to be tried on its own.
+var reAltSeparator = regexp.MustCompile(`\s*[/｜|]\s*`)
+
+// reSegments splits a name on the separators fansub groups use between the
+// group tag, the title and the episode.
+var reSegments = regexp.MustCompile(`\s+[-–—]\s+`)
+
+// SearchTitles returns the titles to try against TMDB for a release name, most
+// likely first.
+//
+// Parse reports one title, which is right for a caption but not for a search:
+// Chinese animation is published with a group tag, several alternative names
+// and a 第14话 episode marker, and the cleaned title of such a name is often
+// not what TMDB stores. Trying the alternatives costs a request each and only
+// when the previous ones missed, so a release that already resolves is
+// unaffected.
+func SearchTitles(raw string) []string {
+	var out []string
+	seen := map[string]bool{}
+	add := func(s string) {
+		s = strings.TrimSpace(strings.Trim(s, "-–—_.·:;,[]【】"))
+		// A bracketed fragment left over from splitting ("[1080p] GuAn") is
+		// noise, not a title.
+		if strings.ContainsAny(s, "[]【】") || s == "" {
+			return
+		}
+		if releaseTag[strings.ToLower(s)] {
+			return
+		}
+		// A fragment that is only a number is a leftover episode or season
+		// marker. Searching for it is not merely useless but harmful: TMDB has
+		// works literally named "12" and "86", so "Kimi ga Shinu made Koi wo
+		// Shitai - 12" would resolve to a Russian series called 12.
+		if isNumericFragment(s) {
+			return
+		}
+		if len([]rune(s)) < 2 || seen[s] {
+			return
+		}
+		seen[s] = true
+		out = append(out, s)
+	}
+
+	// Parse only strips one leading bracket, so the name is also parsed with
+	// every leading group removed; "[Shridhuu][1080p] GuAn / 一斩苍穹" otherwise
+	// keeps the second bracket in its title.
+	for _, basis := range []string{Parse(raw).Title, Parse(stripLeadingGroups(raw)).Title} {
+		add(basis)
+		// The alternatives live in the text these forms produced, so splitting
+		// them keeps whatever markers parsing already removed.
+		for _, part := range reAltSeparator.Split(basis, -1) {
+			add(part)
+		}
+		// A group tag can sit after a type prefix ("[剧集] [喵萌奶茶屋] 名称"), so
+		// the segments between dashes are tried too.
+		for _, seg := range reSegments.Split(basis, -1) {
+			add(seg)
+			for _, part := range reAltSeparator.Split(seg, -1) {
+				add(part)
+			}
+		}
+	}
+	return out
+}
+
+// reLeadingGroup matches a bracketed group at the start of a release name.
+//
+// It allows a much longer name than rePrefix, which is capped at 8 characters
+// because it only ever recognises a media type tag such as [剧集]. Fansub group
+// names are far longer ("[喵萌奶茶屋&LoliHouse]"), and applying that cap here
+// would leave the group in the title and match nothing.
+var reLeadingGroup = regexp.MustCompile(`^\s*[\[【][^\]】]{1,60}[\]】]\s*`)
+
+// stripLeadingGroups removes every bracketed group at the start of a release
+// name. Fansub releases often carry two ("[Shridhuu][1080p] 名称") while Parse
+// strips only the first, and the leftover bracket would corrupt the search
+// term. Only leading groups are dropped: a bracket later in the name may be
+// part of the title.
+func stripLeadingGroups(s string) string {
+	for {
+		m := reLeadingGroup.FindString(s)
+		if m == "" {
+			return s
+		}
+		s = strings.TrimSpace(s[len(m):])
+	}
+}
+
+// isNumericFragment reports whether a fragment carries no letters at all, which
+// means it is an episode number, a resolution or a year rather than a title.
+func isNumericFragment(s string) bool {
+	for _, r := range s {
+		if unicode.IsLetter(r) {
+			return false
+		}
+	}
+	return true
 }

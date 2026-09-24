@@ -66,7 +66,21 @@ tv:
 // These are exactly the categories that were not asked for. What remains after
 // excluding them is 国漫 and 国产剧, which is how a "Chinese animation and
 // Chinese TV only" channel is expressed with the rules above.
-var DefaultCategoryBlacklist = []string{"欧美剧", "日韩剧", "综艺", "纪录片", "日番", "未分类"}
+//
+// The list has to name every category the rules can produce, not just the
+// obvious ones. 儿童 and the movie categories are easy to forget and both leak
+// silently: a Bilibili release with no country TMDB recognises lands in 儿童
+// (genre 10762 alone is enough), and no movie category is Chinese, so enabling
+// 电影 in the tracker would otherwise pass every film straight through. The
+// point of the exclusion list is that whatever it misses is forwarded.
+var DefaultCategoryBlacklist = []string{
+	// Series categories that are not Chinese.
+	"欧美剧", "日韩剧", "综艺", "纪录片", "日番", "儿童",
+	// Every movie category: the channel is for 国漫 and 国产剧.
+	"动画电影", "华语电影", "日韩电影", "欧美电影", "其他电影",
+	// A release the rules could not name is not one this channel asked for.
+	"未分类",
+}
 
 // DefaultGenreBlacklist drops TMDB genres that are unwanted regardless of
 // region.
