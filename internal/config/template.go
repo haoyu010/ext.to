@@ -10,19 +10,68 @@ import (
 
 // DefaultTemplate is the caption used for new installs. It is rendered as
 // Telegram HTML, so only <b>, <i>, <a>, <code> and <pre> tags are allowed.
-const DefaultTemplate = `<b>{title}</b>
+//
+// The fields are written as labelled lines rather than as icon-separated ones,
+// because a label survives a value going missing: a line that reads "分类："
+// with nothing after it is still readable, while a row of two values joined by
+// a separator leaves a stray bullet when one of them is empty.
+//
+// The single link is the torrent itself, not the tracker's detail page. The
+// detail page is a web page nobody wants mid-download, and {torrent_url}
+// already falls back to it when no magnet could be resolved, so the line never
+// becomes a dead link.
+const DefaultTemplate = `名称：{title}
+分类：{category}
+大小：{size} · {files} 个文件
+做种：{seeds} · 下载：{leeches}
+发布：{age}
+
+<a href="{torrent_url}">{torrent_label}</a>`
+
+// TMDBTemplate is an optional caption preset that leads with the matched TMDB
+// entry. It is offered in the dashboard rather than applied by default, because
+// it only renders well once a TMDB key is configured.
+//
+// The TMDB reference is plain text rather than a link: the entry's own page is
+// a detour for a reader who came for the torrent, and the type and number
+// already identify it unambiguously ("tv/287994"). The one link in the caption
+// is the torrent.
+//
+// {title} on its own line is the release name as published. It is kept beside
+// the TMDB fields because the two answer different questions: the TMDB lines
+// say which work this is, and the release name says which rip it is, down to
+// the resolution and the group.
+const TMDBTemplate = `片名：{tmdb_title}{season_label}
+年份：{tmdb_year}
+TMDB：{tmdb_ref}
+分类：{category_tmdb}
+
+{title}
+简介：{tmdb_overview}
+分享：{uploader}
+大小：{size}
+
+<a href="{torrent_url}">{torrent_label}</a>`
+
+// legacyTemplates are the presets this project shipped before the torrent link
+// was introduced, kept so an existing install can be moved onto the current
+// ones.
+//
+// They are matched byte for byte, so a template the operator has edited is
+// left exactly as written: only an install still carrying a preset verbatim is
+// migrated. The migration is needed because the old pairs link the tracker's
+// detail page and never reference {magnet}, so an install that never touched
+// them has no way to learn that a torrent link exists.
+var legacyTemplates = map[string]string{
+	`<b>{title}</b>
 
 📁 {category}
 💾 {size} · 📄 {files} files
 🌱 {seeds} seeders · {leeches} leechers
 🕐 {age}
 
-<a href="{url}">Open on ext.to</a>`
-
-// TMDBTemplate is an optional caption preset that leads with the matched
-// TMDB entry. It is offered in the dashboard rather than applied by default,
-// because it only renders well once a TMDB key is configured.
-const TMDBTemplate = `<b>{tmdb_title}</b>{season_label}{tmdb_year_paren}
+<a href="{url}">Open on ext.to</a>`: DefaultTemplate,
+	`<b>{tmdb_title}</b>{season_label}{tmdb_year_paren}
 ⭐ {tmdb_rating}/10 · {tmdb_votes} votes
 
 📁 {category_tmdb}
@@ -30,7 +79,17 @@ const TMDBTemplate = `<b>{tmdb_title}</b>{season_label}{tmdb_year_paren}
 🌱 {seeds} seeders · {leeches} leechers
 🕐 {age}
 
-<a href="{tmdb_url}">TMDB</a> · <a href="{url}">ext.to</a>`
+<a href="{tmdb_url}">TMDB</a> · <a href="{url}">ext.to</a>`: TMDBTemplate,
+}
+
+// migrateLegacyTemplate upgrades a template still held verbatim from an
+// earlier release, and returns anything else unchanged.
+func migrateLegacyTemplate(tpl string) string {
+	if next, ok := legacyTemplates[tpl]; ok {
+		return next
+	}
+	return tpl
+}
 
 // TemplateFields lists the placeholders available in a caption template. The
 // descriptions are shown in the dashboard, which is Chinese, so they are
@@ -45,6 +104,7 @@ var TemplateFields = []struct{ Key, Desc string }{
 	{"{tmdb_url}", "TMDB 条目链接"},
 	{"{tmdb_id}", "TMDB 数字编号"},
 	{"{tmdb_type}", "movie 或 tv"},
+	{"{tmdb_ref}", "TMDB 的「类型/编号」，例如 tv/287994；未匹配时为空"},
 	{"{tmdb_overview}", "TMDB 简介，会按 Telegram 限制截断"},
 	{"{category_tmdb}", "TMDB 分类规则命中的分类，例如 国漫、国产剧，未命中时为「未分类」"},
 	{"{season}", "季数，例如 6；发布名未写季数时为空。TMDB 的剧集条目含全部季，季数只来自发布名"},
@@ -61,6 +121,8 @@ var TemplateFields = []struct{ Key, Desc string }{
 	{"{uploader}", "ext.to 给出的发布者"},
 	{"{url}", "种子详情页的完整链接"},
 	{"{magnet}", "磁力链接，取不到时为空"},
+	{"{torrent_url}", "种子链接：磁力链接，取不到时退回详情页链接，永远可用"},
+	{"{torrent_label}", "配合 {torrent_url} 的文字，有磁力时为「种子链接」，否则为「详情页」"},
 	{"{id}", "ext.to 种子编号"},
 }
 
@@ -88,7 +150,13 @@ type TemplateData struct {
 	TMDBURL           string
 	TMDBID            int
 	TMDBType          string
-	TMDBOverview      string
+	// TMDBRef is the type and id as one token, "tv/287994". It is separate from
+	// the two fields it is built from so a caption can print it as text without
+	// the separator and the empty case becoming the template's problem: a
+	// template written as "{tmdb_type}/{tmdb_id}" renders "/0" for a release
+	// that matched nothing.
+	TMDBRef      string
+	TMDBOverview string
 	// Season and Episode are the numbers the release name stated, and are zero
 	// when it stated none. They come from the release name rather than from
 	// TMDB, because a TMDB series entry covers every season: the entry says
@@ -129,6 +197,25 @@ func Render(tpl string, d TemplateData) string {
 	tmdbURL := d.TMDBURL
 	if tmdbURL == "" {
 		tmdbURL = d.URL
+	}
+	// TMDBRef is the type and id as one token, so a caption can print the
+	// reference as plain text. Building it here rather than in the template
+	// keeps the empty case out of the template: "{tmdb_type}/{tmdb_id}" would
+	// render "/0" for a release that matched nothing.
+	tmdbRef := ""
+	if d.TMDBID != 0 {
+		tmdbRef = fmt.Sprintf("%s/%d", d.TMDBType, d.TMDBID)
+	}
+	// One link serves both cases. A magnet is what a reader actually wants, and
+	// the detail page is the honest fallback when none could be resolved: the
+	// magnet endpoint is per-page and a failure there must not leave a dead
+	// link in a published post. The label follows the destination so the caption
+	// never promises a magnet it does not have.
+	torrentURL, torrentLabel := d.Magnet, ""
+	if torrentURL == "" {
+		torrentURL, torrentLabel = d.URL, "详情页"
+	} else {
+		torrentLabel = "种子链接"
 	}
 	// Like the TMDB title, the classified name degrades to the tracker's own
 	// category rather than rendering an empty value, so a template using it
@@ -178,6 +265,7 @@ func Render(tpl string, d TemplateData) string {
 		"{tmdb_url}", escape(tmdbURL),
 		"{tmdb_id}", fmt.Sprint(d.TMDBID),
 		"{tmdb_type}", escape(d.TMDBType),
+		"{tmdb_ref}", escape(tmdbRef),
 		"{tmdb_overview}", escape(truncateRunes(d.TMDBOverview, 320)),
 		"{category_tmdb}", escape(ruleCategory),
 		"{season}", escape(season),
@@ -194,9 +282,75 @@ func Render(tpl string, d TemplateData) string {
 		"{uploader}", escape(d.Uploader),
 		"{url}", escape(d.URL),
 		"{magnet}", escape(d.Magnet),
+		"{torrent_url}", escape(torrentURL),
+		"{torrent_label}", escape(torrentLabel),
 		"{id}", fmt.Sprint(d.ID),
 	)
-	return rep.Replace(tpl)
+	return dropEmptyValueLines(rep.Replace(tpl))
+}
+
+// dropEmptyValueLines removes lines that ended up promising something they do
+// not deliver: a bare label such as "年份：" when the matched entry carries no
+// air date, and a link with nothing to point at.
+//
+// A labelled caption is written once and rendered for every release, but not
+// every field exists for every one: some TMDB series entries have no
+// first_air_date, and an unmatched release has no TMDB fields at all. Leaving
+// the label behind would publish a line that promises a value and delivers
+// none, so the line is dropped instead. A link is the same shape of problem:
+// the magnet is resolved per page and can fail, so a caption whose link line
+// has no destination must not be published as a dead link.
+//
+// Only a line that is nothing but a short label and a colon, or nothing but an
+// anchor with an empty href, is removed. That keeps the rule from touching
+// prose or an intentional value such as "大小：NG".
+func dropEmptyValueLines(s string) string {
+	lines := strings.Split(s, "\n")
+	out := lines[:0]
+	for _, line := range lines {
+		if isEmptyLabelLine(line) || isEmptyLinkLine(line) {
+			continue
+		}
+		out = append(out, line)
+	}
+	return strings.Join(out, "\n")
+}
+
+// isEmptyLinkLine reports whether one line is an anchor with no destination.
+func isEmptyLinkLine(line string) bool {
+	t := strings.TrimSpace(line)
+	if len(t) < len(`<a href=""></a>`) {
+		return false
+	}
+	if !strings.HasPrefix(t, `<a href="">`) {
+		return false
+	}
+	rest := strings.TrimPrefix(t, `<a href="">`)
+	end := strings.Index(rest, "</a>")
+	if end < 0 {
+		// Unclosed markup is Telegram's to reject, not this rule's to hide.
+		return false
+	}
+	// Anything after the closing tag is content in its own right.
+	return strings.TrimSpace(rest[end+len("</a>"):]) == ""
+}
+
+// isEmptyLabelLine reports whether one line is a label with no value after it.
+func isEmptyLabelLine(line string) bool {
+	t := strings.TrimSpace(line)
+	if !strings.HasSuffix(t, "：") && !strings.HasSuffix(t, ":") {
+		return false
+	}
+	label := strings.TrimSuffix(strings.TrimSuffix(t, "："), ":")
+	if label == "" {
+		return false
+	}
+	// A label is a short word, and markup is not part of one. Anything longer
+	// is prose that happens to end in a colon and must be left alone.
+	if n := len([]rune(label)); n > 12 {
+		return false
+	}
+	return !strings.ContainsAny(label, "<>")
 }
 
 // humanCount renders a vote count compactly, for example 533052 -> "533k".

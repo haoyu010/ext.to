@@ -241,6 +241,7 @@ func (s *Settings) Validate() error {
 	if s.Template == "" {
 		s.Template = DefaultTemplate
 	}
+	s.Template = migrateLegacyTemplate(s.Template)
 	if s.TMDBLang == "" {
 		s.TMDBLang = "zh-CN"
 	}
@@ -388,6 +389,11 @@ func Load(path string) (*Store, error) {
 	if err := json.Unmarshal(b, &cur); err != nil {
 		return nil, fmt.Errorf("parse %s: %w", path, err)
 	}
+	// An install that never edited its caption still carries a preset from an
+	// earlier release, so the migration runs at load rather than only when the
+	// settings form is saved: the forwarder reads the template from storage and
+	// would otherwise keep publishing the old one indefinitely.
+	cur.Template = migrateLegacyTemplate(cur.Template)
 	st.cur = cur
 	return st, nil
 }

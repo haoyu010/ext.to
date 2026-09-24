@@ -45,16 +45,16 @@ func titleServer(t *testing.T, answers map[string]int) (*httptest.Server, *[]str
 	return srv, &queries
 }
 
-// A traditional release name has to be searched in its simplified form. TMDB
-// is queried with language=zh-CN and knows entries by their simplified names,
-// so a traditional query can come back with nothing at all: measured against
-// the live API, 進擊的巨人 最終季 returns no results while 进击的巨人 最终季
-// returns them.
+// A traditional release name has to be searched in its simplified form as
+// well. TMDB is queried with language=zh-CN and knows entries by their
+// simplified names, so a traditional query can come back with nothing at all:
+// measured against the live API, 進擊的巨人 最終季 returns no results while
+// 进击的巨人 最终季 returns them.
 //
-// The query is folded rather than an extra folded candidate being offered,
-// because the candidate list dedupes on Normalize, which already folds: a
-// folded variant added there would be discarded as a duplicate of the
-// unfolded one and never searched.
+// The folded spelling is offered as a second attempt inside the resolver
+// rather than as an extra candidateTitles entry, because the candidate list
+// dedupes on Normalize, which already folds: a folded variant added there
+// would be discarded as a duplicate of the unfolded one and never searched.
 func TestResolveFoldsTraditionalQuery(t *testing.T) {
 	var mu sync.Mutex
 	var queries []string
@@ -97,11 +97,73 @@ func TestResolveFoldsTraditionalQuery(t *testing.T) {
 	if e.ID != 225008 {
 		t.Errorf("ID = %d, want 225008", e.ID)
 	}
-	// No query may reach TMDB in traditional script.
-	for _, q := range queries {
-		if strings.ContainsAny(q, "長節") {
-			t.Errorf("query %q was sent in traditional script, which TMDB answers with nothing", q)
+	// The stated spelling is tried first, and the folded one is what resolves
+	// it once that comes back empty.
+	if len(queries) != 2 || !strings.ContainsAny(queries[0], "長節") {
+		t.Fatalf("queries = %v, want the stated spelling first", queries)
+	}
+	if queries[1] != "漫长的季节" {
+		t.Errorf("second query = %q, want the folded spelling", queries[1])
+	}
+}
+
+// The fold must never replace the stated spelling, only supplement it. It is
+// per character, so it also rewrites kanji shared with Japanese, and it
+// narrows what TMDB returns rather than leaving it alone: measured against the
+// live API, /search/movie for 戦場のヴァルキュリア3 誰がための銃瘡 returns the
+// entry while the folded 戦场のヴァルキュリア3 誰がための銃瘡 returns nothing,
+// so a fold-only query loses that film outright. 化物語 and 鬼滅の刃 無限列車編
+// are the same on the movie endpoint.
+func TestResolveKeepsTheStatedSpellingFirst(t *testing.T) {
+	var mu sync.Mutex
+	var queries []string
+	mux := http.NewServeMux()
+	mux.HandleFunc("/search/tv", func(w http.ResponseWriter, r *http.Request) {
+		write(w, map[string]any{"results": []any{}})
+	})
+	// The entry is indexed under the Japanese spelling only, and the folded
+	// spelling is what a fold-only query would send.
+	mux.HandleFunc("/search/movie", func(w http.ResponseWriter, r *http.Request) {
+		q := r.URL.Query().Get("query")
+		mu.Lock()
+		queries = append(queries, q)
+		mu.Unlock()
+		if q != "戦場のヴァルキュリア3 誰がための銃瘡" {
+			write(w, map[string]any{"results": []any{}})
+			return
 		}
+		write(w, map[string]any{"results": []map[string]any{
+			{"id": 1549734, "title": "戦場のヴァルキュリア3 誰がための銃瘡",
+				"release_date": "2011-06-26"},
+		}})
+	})
+	mux.HandleFunc("/movie/", func(w http.ResponseWriter, r *http.Request) {
+		write(w, map[string]any{
+			"id": 1549734, "title": "戦場のヴァルキュリア3 誰がための銃瘡",
+			"original_title": "戦場のヴァルキュリア3 誰がための銃瘡",
+			"release_date":   "2011-06-26", "vote_average": 7.2, "vote_count": 40,
+		})
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	c := New("key", "zh-CN")
+	c.SetBaseURL(srv.URL)
+	e, err := c.Resolve(context.Background(), "",
+		"[电影] 戦場のヴァルキュリア3 誰がための銃瘡 (2011) 1080p", "")
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if e.ID != 1549734 {
+		t.Errorf("ID = %d, want 1549734", e.ID)
+	}
+	// The stated spelling has to be sent, and sending it has to be enough: the
+	// folded spelling would return nothing for this title.
+	if len(queries) == 0 || queries[0] != "戦場のヴァルキュリア3 誰がための銃瘡" {
+		t.Fatalf("queries = %v, want the stated spelling first", queries)
+	}
+	if len(queries) != 1 {
+		t.Errorf("queries = %v, want the stated spelling to settle it", queries)
 	}
 }
 
@@ -203,15 +265,22 @@ func TestResolveFallsBackToReleaseTitle(t *testing.T) {
 	if e.MatchedBy != "title" {
 		t.Errorf("MatchedBy = %q, want title", e.MatchedBy)
 	}
-	// The canonical title must be attempted first, then the release title.
-	if len(*queries) != 2 {
-		t.Fatalf("queries = %v, want two attempts", *queries)
+	// The canonical title must be attempted first, then the release title. The
+	// canonical spelling is Japanese, so folding rewrites it and the folded
+	// form is offered as its own attempt in between; the stated spelling still
+	// comes first, which is what keeps a Japanese name resolvable.
+	if len(*queries) != 3 {
+		t.Fatalf("queries = %v, want three attempts", *queries)
 	}
 	if !strings.Contains((*queries)[0], "透明") {
 		t.Errorf("first query = %q, want the canonical title first", (*queries)[0])
 	}
-	if !strings.Contains((*queries)[1], "Love Unseen") {
-		t.Errorf("second query = %q, want the release title", (*queries)[1])
+	if (*queries)[0] != "透明な夜に駆ける君と、目に見えない恋をした。" {
+		t.Errorf("first query = %q, want the canonical title as stated", (*queries)[0])
+	}
+	last := (*queries)[len(*queries)-1]
+	if !strings.Contains(last, "Love Unseen") {
+		t.Errorf("last query = %q, want the release title", last)
 	}
 }
 

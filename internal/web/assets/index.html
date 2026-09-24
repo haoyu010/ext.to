@@ -808,7 +808,10 @@
 
         <div class="card">
           <h3>推送内容</h3>
-          <p class="hint">使用占位符组合消息正文，支持 Telegram 的 HTML 标签（<span class="kbd">&lt;b&gt;</span>、<span class="kbd">&lt;i&gt;</span>、<span class="kbd">&lt;a&gt;</span>、<span class="kbd">&lt;code&gt;</span>）。</p>
+          <p class="hint">
+            使用占位符组合消息正文，支持 Telegram 的 HTML 标签（<span class="kbd">&lt;b&gt;</span>、<span class="kbd">&lt;i&gt;</span>、<span class="kbd">&lt;a&gt;</span>、<span class="kbd">&lt;code&gt;</span>）。
+            一条正文最多 1024 个字符（带海报时），超出的部分会被 Telegram 拒绝。
+          </p>
           <label class="field">
             <span class="lbl">消息模板</span>
             <textarea id="setTemplate"></textarea>
@@ -818,6 +821,20 @@
             <button class="btn" id="btnUseDefault" type="button">默认模板</button>
             <button class="btn" id="btnUseTmdb" type="button">TMDB 模板</button>
           </div>
+          <p class="hint">
+            种子链接请用 <span class="kbd">{torrent_url}</span>：它优先填磁力链接，
+            取不到磁力时自动退回详情页链接，所以这条链接永远可用；
+            <span class="kbd">{torrent_label}</span> 会跟着变成「种子链接」或「详情页」，避免写死的文字与实际去向不符。
+            详情页链接是 <span class="kbd">{url}</span>，磁力链接单独取是 <span class="kbd">{magnet}</span>（取不到时为空）。
+          </p>
+          <p class="hint">
+            TMDB 的条目以文字呈现，用 <span class="kbd">{tmdb_ref}</span> 会渲染成 <span class="kbd">tv/287994</span> 这样的类型与编号，
+            不会把读者引到站外；确实要点开时再用 <span class="kbd">{tmdb_url}</span>。
+          </p>
+          <p class="hint">
+            带标签的整行（例如 <span class="kbd">年份：</span>）在该字段为空时会整行省略，
+            不会只留下一个冒号。
+          </p>
           <p class="hint">
             季数与集数取自发布名（<span class="kbd">{season}</span>、<span class="kbd">{episode}</span>），
             不是取自 TMDB —— TMDB 的一部剧集条目覆盖全部季，只有发布名才写着是哪一季。
@@ -838,7 +855,7 @@
               </label>
               <label class="check">
                 <input type="checkbox" id="setMagnet">
-                <span class="t"><b>附带磁力链接</b><small>从详情页实时获取签名磁力链接。</small></span>
+                <span class="t"><b>附带磁力链接</b><small>从详情页实时获取签名磁力链接，供 <span class="kbd">{magnet}</span> 与 <span class="kbd">{torrent_url}</span> 使用；取不到磁力时 <span class="kbd">{torrent_url}</span> 退回详情页链接，推送不会失败。</small></span>
               </label>
             </div>
             <div>

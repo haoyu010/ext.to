@@ -9,6 +9,7 @@
 - **定时抓取最新发布** — 按分类（电影 / 剧集 / 音乐 / 游戏 / 应用 / 图书 / 动漫 / 其他）与时间窗口（24 小时 ~ 1 个月）轮询
 - **关键词过滤** — 包含 / 排除正则表达式，以及最小 / 最大体积限制
 - **完整推送内容** — 标题、分类、体积、文件数、做种数、下载数、发布时间、详情页链接、**magnet 磁力链接**、**原始海报图**
+- **种子链接永远可用** — 模板里的 `{torrent_url}` 优先填磁力链接，取不到磁力时自动退回详情页链接，不会发出去一个点不开的死链接
 - **TMDB 匹配** — 用详情页的 IMDb 编号或发布名首行标题匹配 TMDB，补全中文标题、评分、海报，支持「只推送匹配到 TMDB 的种子」。标题匹配会识别字幕组的多别名命名并核对 TMDB 别名，中文动画因此能匹配上
 - **分类过滤（可按国别/类型收窄频道）** — 按 TMDB 元数据把条目归类为 国漫 / 日番 / 国产剧 / 欧美剧 / 日韩剧 / 综艺 / 纪录片 等，再用分类黑名单、类型名黑名单与 Genre ID 黑名单排除；默认配置即「只推送国漫与国产剧」
 - **首次运行建立基线** — 不会把整站历史灌进你的频道，只从下一次扫描开始推送新帖
@@ -217,6 +218,7 @@ TMDB 用 `language=zh-CN` 查询，条目以**简体名**登记。所以繁体�
 | `{tmdb_year}` `{tmdb_rating}` `{tmdb_votes}` | 年份、评分、评分人数 |
 | `{tmdb_year_paren}` | 渲染成 ` (2023)`（含前导空格与外层括号）；TMDB 无年份时为空，不会留下空括号 |
 | `{tmdb_url}` `{tmdb_id}` `{tmdb_type}` | TMDB 链接、编号、类型（movie / tv） |
+| `{tmdb_ref}` | TMDB 的「类型/编号」，如 `tv/287994`；未匹配时为空。适合以纯文字标明条目，不把读者引到站外 |
 | `{tmdb_overview}` | TMDB 简介，按 Telegram 限制截断为 320 字 |
 | `{category_tmdb}` | 分类规则判定的分类，如 `国漫`、`国产剧`；未命中时为「未分类」，无规则时回退为站点分类 |
 | `{season}` `{season_label}` `{episode}` | 季数、季数标签、集数，取自发布名，见上文 |
@@ -226,18 +228,18 @@ TMDB 用 `language=zh-CN` 查询，条目以**简体名**登记。所以繁体�
 | `{age}` | 发布时间，如 `5 minutes ago` |
 | `{source}` `{uploader}` | 来源站点、发布者 |
 | `{url}` `{magnet}` `{id}` | 详情页链接、磁力链接、种子 ID |
+| `{torrent_url}` `{torrent_label}` | **推荐**。`{torrent_url}` 优先填磁力链接，取不到磁力时退回详情页链接，所以这条链接永远可用；`{torrent_label}` 会跟着渲染成「种子链接」或「详情页」，避免写死的文字与实际去向不符 |
 
 默认模板：
 
 ```html
-<b>{title}</b>
+名称：{title}
+分类：{category}
+大小：{size} · {files} 个文件
+做种：{seeds} · 下载：{leeches}
+发布：{age}
 
-📁 {category}
-💾 {size} · 📄 {files} files
-🌱 {seeds} seeders · {leeches} leechers
-🕐 {age}
-
-<a href="{url}">Open on ext.to</a>
+<a href="{torrent_url}">{torrent_label}</a>
 ```
 
 如果标题里包含非法 HTML 标签，转发器会自动降级为纯文本重发一次，不会因为单条标题导致整个流程中断。
@@ -245,16 +247,24 @@ TMDB 用 `language=zh-CN` 查询，条目以**简体名**登记。所以繁体�
 TMDB 模板（面板里点 **TMDB 模板** 一键套用）：
 
 ```html
-<b>{tmdb_title}</b>{season_label}{tmdb_year_paren}
-⭐ {tmdb_rating}/10 · {tmdb_votes} votes
+片名：{tmdb_title}{season_label}
+年份：{tmdb_year}
+TMDB：{tmdb_ref}
+分类：{category_tmdb}
 
-📁 {category}
-💾 {size} · 📄 {files} files
-🌱 {seeds} seeders · {leeches} leechers
-🕐 {age}
+{title}
+简介：{tmdb_overview}
+分享：{uploader}
+大小：{size}
 
-<a href="{tmdb_url}">TMDB</a> · <a href="{url}">ext.to</a>
+<a href="{torrent_url}">{torrent_label}</a>
 ```
+
+**为什么模板里的整行会消失。** 带标签的整行（`年份：`、`TMDB：`、`简介：`）在该字段为空时会整行省略，不会只留下一个冒号。这不是给模板格外加的逻辑，而是这类字段本身就不一定有：TMDB 少数剧集条目的 `first_air_date` 是空的（`毛骗 第二季 (2011)` 就是），未匹配到 TMDB 的种子则整组 TMDB 字段都为空。同理，只剩一个空链接的行也会被省略 —— 磁力链接是按页面签发的，解析失败时 `{torrent_url}` 会退回详情页；连详情页都没有时，这一行直接不出现，而不是发出去一个点不开的死链接。判定很保守：只有「短标签 + 冒号」或「单独一个空链接」的行会被删，像 `大小：NG` 这种真实取值、以及以冒号结尾的简介正文都不会被误伤。
+
+**为什么 TMDB 用文字而不是链接。** `{tmdb_ref}` 渲染成 `tv/287994`，读者一眼知道是哪一条，又不会被引到站外 —— 想看简介的已经看到了，想看种子的不想再跳一次。确实要放链接时用 `{tmdb_url}`。
+
+**升级时会自动换模板。** 旧版本的默认模板与 TMDB 模板只链详情页、且从未用到 `{magnet}`，所以那样装的实例没有途径知道有种子链接这回事。启动时会按**逐字节**比对把这两个旧预设换成新预设；只要改动过（哪怕只加了一行），就完全保持原样不动 —— 静默改写别人自己写的正文，比留着旧模板更糟。
 
 ## 本地开发
 

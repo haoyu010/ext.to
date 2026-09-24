@@ -307,6 +307,57 @@ func (r searchResult) OriginalTitle() string {
 // first air date. Filtering server-side would discard valid results, so the
 // year is applied here instead, and only loosely.
 func (c *Client) byTitle(ctx context.Context, title string, parsed media.Result) (Entry, error) {
+	// The release's own spelling is tried first and the folded spelling only
+	// when that finds nothing.
+	//
+	// The fold is per character, so it also rewrites kanji Japanese shares with
+	// Chinese, and it narrows what TMDB returns rather than leaving it alone:
+	// measured on the live API, /search/movie for 呪術廻戦 returns 8 results and
+	// the folded 呪术廻戦 returns 4, and the fold can empty a query outright —
+	// /search/movie for 化物語 returns 3 while 化物语 returns none, and
+	// /search/tv for 終末なにしてますか returns 1 while 终末なにしてますか
+	// returns none. So the fold is an addition to the query, never a
+	// replacement for it.
+	//
+	// It is still needed as its own attempt, because a traditional Chinese
+	// release name can return nothing as stated: 進擊的巨人 最終季 returns no
+	// results, while its folded form returns the entries the comparison then
+	// confirms. Offering the folded form here rather than as another
+	// candidateTitles entry is what makes it effective: candidateTitles dedupes
+	// on Normalize, which already folds, so a folded variant added there would
+	// be discarded as a duplicate of this one and never searched.
+	//
+	// Over the 193-title live corpus and 20 Japanese titles this ordering
+	// matched exactly as many releases as folding every query did, so it is not
+	// a fix for an observed miss; it removes the exposure to the narrowing
+	// above, which is real and whose extent is not knowable in advance.
+	for _, q := range queryForms(title) {
+		e, err := c.searchByTitle(ctx, q, parsed)
+		if err == nil {
+			return e, nil
+		}
+		// A transport or key problem will not be fixed by another spelling, so
+		// it is reported immediately rather than masked by the next attempt.
+		if !errors.Is(err, ErrNoMatch) {
+			return Entry{}, err
+		}
+	}
+	return Entry{}, ErrNoMatch
+}
+
+// queryForms returns the spellings to search, in order. The folded form is
+// only offered when it differs from the stated one, so a title already written
+// the way TMDB stores it still costs a single request.
+func queryForms(title string) []string {
+	if folded := media.ToSimplified(title); folded != title {
+		return []string{title, folded}
+	}
+	return []string{title}
+}
+
+// searchByTitle searches one spelling and applies both match passes to its
+// results.
+func (c *Client) searchByTitle(ctx context.Context, title string, parsed media.Result) (Entry, error) {
 	kinds := []string{"movie", "tv"}
 	switch parsed.Kind {
 	case media.KindMovie:
@@ -322,14 +373,7 @@ func (c *Client) byTitle(ctx context.Context, title string, parsed media.Result)
 		var out struct {
 			Results []searchResult `json:"results"`
 		}
-		// The query is folded to simplified, because TMDB indexes the entry
-		// under its zh-CN name while the release may state the traditional one.
-		// Measured: 進擊的巨人 最終季 returns no results at all, and its folded
-		// form returns the entries the comparison then confirms. Folding here
-		// rather than in the caller is what makes it effective: candidateTitles
-		// dedupes on Normalize, which already folds, so a folded variant offered
-		// as an extra candidate would be discarded as a duplicate of this one.
-		q := url.Values{"query": {media.ToSimplified(title)}, "language": {c.Lang}}
+		q := url.Values{"query": {title}, "language": {c.Lang}}
 		if err := c.get(ctx, "/search/"+kind, q, &out); err != nil {
 			return Entry{}, err
 		}

@@ -1,9 +1,55 @@
 package config
 
 import (
+	"encoding/json"
+	"os"
 	"path/filepath"
 	"testing"
 )
+
+// A deployed install reads its caption from storage, so a preset sitting there
+// from an older release has to be upgraded when the settings are loaded, not
+// only when the settings form happens to be saved.
+//
+// The file is written by hand because that is the situation being reproduced:
+// a config.json on disk holding a template this release no longer ships.
+func TestLoadMigratesAStoredLegacyTemplate(t *testing.T) {
+	legacy := "<b>{title}</b>\n\n📁 {category}\n💾 {size} · 📄 {files} files\n" +
+		"🌱 {seeds} seeders · {leeches} leechers\n🕐 {age}\n\n" +
+		`<a href="{url}">Open on ext.to</a>`
+
+	write := func(t *testing.T, tpl string) string {
+		t.Helper()
+		b, err := json.Marshal(map[string]string{"template": tpl})
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		path := filepath.Join(t.TempDir(), "config.json")
+		if err := os.WriteFile(path, b, 0o600); err != nil {
+			t.Fatalf("write: %v", err)
+		}
+		return path
+	}
+
+	st, err := Load(write(t, legacy))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got := st.Get().Template; got != DefaultTemplate {
+		t.Errorf("the stored legacy template was not migrated:\n%q", got)
+	}
+
+	// A template the operator edited must come back untouched, even though it
+	// began as a preset.
+	mine := legacy + "\n我自己加的一行"
+	st2, err := Load(write(t, mine))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got := st2.Get().Template; got != mine {
+		t.Errorf("an edited template was rewritten on load:\n%q", got)
+	}
+}
 
 func TestParseSizeMB(t *testing.T) {
 	cases := []struct {
