@@ -45,6 +45,145 @@ func titleServer(t *testing.T, answers map[string]int) (*httptest.Server, *[]str
 	return srv, &queries
 }
 
+// A traditional release name has to be searched in its simplified form. TMDB
+// is queried with language=zh-CN and knows entries by their simplified names,
+// so a traditional query can come back with nothing at all: measured against
+// the live API, 進擊的巨人 最終季 returns no results while 进击的巨人 最终季
+// returns them.
+//
+// The query is folded rather than an extra folded candidate being offered,
+// because the candidate list dedupes on Normalize, which already folds: a
+// folded variant added there would be discarded as a duplicate of the
+// unfolded one and never searched.
+func TestResolveFoldsTraditionalQuery(t *testing.T) {
+	var mu sync.Mutex
+	var queries []string
+	mux := http.NewServeMux()
+	mux.HandleFunc("/search/tv", func(w http.ResponseWriter, r *http.Request) {
+		q := r.URL.Query().Get("query")
+		mu.Lock()
+		queries = append(queries, q)
+		mu.Unlock()
+		// The entry is indexed under its simplified name, so the traditional
+		// spelling matches nothing: this is what makes the fold necessary
+		// rather than cosmetic. Measured against the live API, the entry for
+		// 漫長的季節 is listed as 漫长的季节.
+		if q != "漫长的季节" {
+			write(w, map[string]any{"results": []any{}})
+			return
+		}
+		write(w, map[string]any{"results": []map[string]any{
+			{"id": 225008, "name": "漫长的季节", "first_air_date": "2023-04-22"},
+		}})
+	})
+	mux.HandleFunc("/search/movie", func(w http.ResponseWriter, r *http.Request) {
+		write(w, map[string]any{"results": []any{}})
+	})
+	mux.HandleFunc("/tv/", func(w http.ResponseWriter, r *http.Request) {
+		write(w, map[string]any{
+			"id": 225008, "name": "漫长的季节", "first_air_date": "2023-04-22",
+			"vote_average": 8.9, "vote_count": 900,
+		})
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	c := New("key", "zh-CN")
+	c.SetBaseURL(srv.URL)
+	e, err := c.Resolve(context.Background(), "", "[剧集] 漫長的季節 (2023) S01E01", "")
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if e.ID != 225008 {
+		t.Errorf("ID = %d, want 225008", e.ID)
+	}
+	// No query may reach TMDB in traditional script.
+	for _, q := range queries {
+		if strings.ContainsAny(q, "長節") {
+			t.Errorf("query %q was sent in traditional script, which TMDB answers with nothing", q)
+		}
+	}
+}
+
+// The order of the search results is not a promise, and the entry a traditional
+// release resolves to is often not the first one: measured against the live
+// API, the query 进击的巨人 最终季 ranks two specials above 进击的巨人, and
+// the match is made by that entry listing 进击的巨人 最终季 as an alias. The
+// alias is stated in simplified, so the comparison only succeeds once both
+// sides are folded.
+func TestResolveMatchesTraditionalQueryAgainstSimplifiedAlias(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/search/tv", func(w http.ResponseWriter, r *http.Request) {
+		write(w, map[string]any{"results": []map[string]any{
+			{"id": 313028, "name": "进击的巨人 最终季 完结篇（后篇）", "first_air_date": "2023-11-05"},
+			{"id": 1429, "name": "进击的巨人", "first_air_date": "2013-04-07"},
+		}})
+	})
+	mux.HandleFunc("/search/movie", func(w http.ResponseWriter, r *http.Request) {
+		write(w, map[string]any{"results": []any{}})
+	})
+	mux.HandleFunc("/tv/", func(w http.ResponseWriter, r *http.Request) {
+		id, name, aliases := 1429, "进击的巨人", []map[string]any{
+			{"title": "进击的巨人 最终季"},
+		}
+		if strings.Contains(r.URL.Path, "313028") {
+			id, name, aliases = 313028, "进击的巨人 最终季 完结篇（后篇）", nil
+		}
+		write(w, map[string]any{
+			"id": id, "name": name, "first_air_date": "2013-04-07",
+			"vote_average": 8.7, "vote_count": 4000,
+			"alternative_titles": map[string]any{"results": aliases},
+		})
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	c := New("key", "zh-CN")
+	c.SetBaseURL(srv.URL)
+	e, err := c.Resolve(context.Background(), "", "[动漫] 進擊的巨人 最終季 - 01", "")
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if e.ID != 1429 {
+		t.Errorf("ID = %d, want 1429 (reached through the simplified alias)", e.ID)
+	}
+}
+
+// The point of folding is that both sides end up on one script. A search that
+// answers with the simplified name must satisfy a query that was written in
+// the traditional one, or the release resolves to nothing even though the
+// entry was found.
+func TestResolveMatchesTraditionalNameAgainstSimplifiedEntry(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/search/tv", func(w http.ResponseWriter, r *http.Request) {
+		// The entry is known to TMDB under the simplified name only.
+		write(w, map[string]any{"results": []map[string]any{
+			{"id": 225008, "name": "漫长的季节", "first_air_date": "2023-04-22"},
+		}})
+	})
+	mux.HandleFunc("/search/movie", func(w http.ResponseWriter, r *http.Request) {
+		write(w, map[string]any{"results": []any{}})
+	})
+	mux.HandleFunc("/tv/", func(w http.ResponseWriter, r *http.Request) {
+		write(w, map[string]any{
+			"id": 225008, "name": "漫长的季节", "first_air_date": "2023-04-22",
+			"vote_average": 8.9, "vote_count": 900,
+		})
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	c := New("key", "zh-CN")
+	c.SetBaseURL(srv.URL)
+	e, err := c.Resolve(context.Background(), "", "[剧集] 漫長的季節 (2023) S01E01", "")
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if e.ID != 225008 {
+		t.Errorf("ID = %d, want 225008", e.ID)
+	}
+}
+
 // A series page reports the original (often non-Latin) name, which TMDB may
 // not index. The English name derived from the release must still be tried.
 func TestResolveFallsBackToReleaseTitle(t *testing.T) {

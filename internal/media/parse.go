@@ -11,6 +11,8 @@ import (
 	"strconv"
 	"strings"
 	"unicode"
+
+	"github.com/siongui/gojianfan"
 )
 
 // Kind is the media type a release refers to.
@@ -369,11 +371,13 @@ func cleanTitle(s string) string {
 	return strings.TrimSpace(s)
 }
 
-// Normalize folds a title to a comparable form: case, punctuation and
-// accents are removed so "Mrs. Doubtfire" and "mrs doubtfire" agree.
+// Normalize folds a title to a comparable form: case, punctuation and accents
+// are removed so "Mrs. Doubtfire" and "mrs doubtfire" agree, and the script is
+// folded so a traditional release name agrees with the simplified name TMDB
+// returns.
 func Normalize(s string) string {
 	var b strings.Builder
-	for _, r := range strings.ToLower(s) {
+	for _, r := range strings.ToLower(ToSimplified(s)) {
 		switch r {
 		case 'à', 'á', 'â', 'ã', 'ä', 'å':
 			r = 'a'
@@ -393,6 +397,81 @@ func Normalize(s string) string {
 		if unicode.IsLetter(r) || unicode.IsDigit(r) {
 			b.WriteRune(r)
 		}
+	}
+	return b.String()
+}
+
+// tradToSimp folds a traditional character to the simplified one TMDB indexes
+// the entry under. It is built from the table the gojianfan package ships,
+// minus the characters listed in keptAsIs.
+//
+// The table is used as data rather than through T2S so that a character can be
+// held back: T2S cannot be asked to skip one.
+var tradToSimp = buildTradToSimp()
+
+// keptAsIs holds the characters the shipped table converts that must not be
+// converted here. Both are characters the table reads as traditional forms
+// although they are correct simplified text in their own right, so folding
+// them corrupts a simplified name instead of helping a traditional one:
+//
+//   - 叠 is the simplified form of 疊. The table also lists it as the
+//     traditional form of 迭, which would turn 重叠 into 重迭 and 折叠 into
+//     折迭. Measured: the query 重叠 returns entries and 重迭 returns none.
+//   - 著 is used in simplified text unchanged (著作, 著名, 显著). The table
+//     reads it as the traditional form of 着 from the 著/着 split and would
+//     fold 著作 to 着作. Measured: 著作 returns 致命著作 and 着作 does not.
+var keptAsIs = map[rune]bool{
+	'叠': true,
+	'著': true,
+}
+
+// buildTradToSimp pairs the table's two charsets, which are aligned rune for
+// rune, and drops the held-back characters.
+func buildTradToSimp() map[rune]rune {
+	trad, simpl := []rune(gojianfan.ChT), []rune(gojianfan.ChS)
+	if len(trad) != len(simpl) {
+		// The package pairs them by position, so a mismatch means the data
+		// cannot be read at all. Folding nothing is better than folding wrong.
+		return nil
+	}
+	m := make(map[rune]rune, len(trad))
+	for i, r := range trad {
+		if keptAsIs[r] || simpl[i] == r {
+			continue
+		}
+		m[r] = simpl[i]
+	}
+	return m
+}
+
+// ToSimplified folds traditional Chinese to simplified, leaving Latin text and
+// simplified input untouched.
+//
+// TMDB is queried with language=zh-CN, so it knows an entry by its simplified
+// name even when the release states the traditional one: the entry for
+// 長安三萬里 is listed as 长安三万里 and the one for 漫長的季節 as 漫长的季节.
+// Both the query and the comparison therefore have to be folded onto one
+// script, or a traditional release resolves to nothing: measured, the query
+// 進擊的巨人 最終季 returns no results at all while its folded form returns
+// them.
+//
+// The mapping is per character and carries no phrase context, so it also
+// rewrites kanji inside Japanese names (鬼滅の刃 becomes 鬼灭の刃). That is
+// harmless for matching, because both sides are folded the same way, and it was
+// measured not to drop the intended entry from the results of a Japanese
+// search.
+func ToSimplified(s string) string {
+	if len(tradToSimp) == 0 {
+		return s
+	}
+	var b strings.Builder
+	b.Grow(len(s))
+	for _, r := range s {
+		if v, ok := tradToSimp[r]; ok {
+			b.WriteRune(v)
+			continue
+		}
+		b.WriteRune(r)
 	}
 	return b.String()
 }

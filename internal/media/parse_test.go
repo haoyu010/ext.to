@@ -121,6 +121,99 @@ func TestNormalize(t *testing.T) {
 	if Normalize("The Long Watch") != Normalize("the.long.watch") {
 		t.Error("expected separators and case to fold together")
 	}
+	// A traditional release name and the simplified name TMDB returns must
+	// normalise to the same key, or the comparison fails on script alone.
+	if got, want := Normalize("長安三萬里"), Normalize("长安三万里"); got != want {
+		t.Errorf("Normalize(長安三萬里) = %q, Normalize(长安三万里) = %q, want equal", got, want)
+	}
+	if got, want := Normalize("進擊的巨人 最終季"), Normalize("进击的巨人 最终季"); got != want {
+		t.Errorf("traditional and simplified forms differ after folding: %q vs %q", got, want)
+	}
+}
+
+// A traditional release name must fold onto the simplified text TMDB stores,
+// because the client queries TMDB with language=zh-CN and the entry comes back
+// under its simplified name. Folding only one side leaves the comparison
+// failing and the release unresolved.
+func TestToSimplifiedFoldsTraditional(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{"長安三萬里", "长安三万里"},
+		{"漫長的季節", "漫长的季节"},
+		{"霸王別姬", "霸王别姬"},
+		{"甄嬛傳", "甄嬛传"},
+		{"無間道", "无间道"},
+		{"讓子彈飛", "让子弹飞"},
+		{"進擊的巨人 最終季", "进击的巨人 最终季"},
+		// A traditional name that is already its own simplified form.
+		{"琅琊榜", "琅琊榜"},
+		// Real corpus shapes: a group tag, English text and a bracketed note.
+		{"【百冬練習組】Re: 從零開始的異世界的生活 [84][繁體]",
+			"【百冬练习组】Re: 从零开始的异世界的生活 [84][繁体]"},
+		// Latin and digits pass through.
+		{"GuAn / 一斩苍穹 / Yi Zhan Cangqiong", "GuAn / 一斩苍穹 / Yi Zhan Cangqiong"},
+		{"", ""},
+	}
+	for _, tc := range cases {
+		if got := ToSimplified(tc.in); got != tc.want {
+			t.Errorf("ToSimplified(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
+
+// Folding must not disturb simplified text. This is what makes it safe to
+// apply to the query itself: most releases are already simplified, and moving
+// one of them turns a working search into a failing one.
+//
+// Two characters are the reason this is a guard rather than a formality. 叠
+// and 著 are correct simplified text that the shipped table treats as
+// traditional, so without the exception list 重叠 would query as 重迭 and
+// 著作 as 着作, and neither is the name TMDB stores.
+func TestToSimplifiedKeepsSimplifiedText(t *testing.T) {
+	cases := []string{
+		"长安三万里", "漫长的季节", "霸王别姬", "甄嬛传", "无间道", "让子弹飞",
+		"琅琊榜", "三体", "一人之下", "进击的巨人 最终季",
+		"重叠", "折叠", "叠加", "著作", "著名", "显著", "著作权",
+		"迭代", "更迭", "无间兄弟情", "冲锋", "冲洗",
+	}
+	for _, in := range cases {
+		if got := ToSimplified(in); got != in {
+			t.Errorf("ToSimplified(%q) = %q, want it unchanged", in, got)
+		}
+	}
+}
+
+// Folding twice must equal folding once, so that a name reaching the fold by
+// more than one path cannot end up different from the same name folded once.
+func TestToSimplifiedIsIdempotent(t *testing.T) {
+	for _, in := range []string{
+		"從零開始的異世界的生活", "長安三萬里", "進擊的巨人 最終季", "甄嬛傳",
+		"重疊", "重迭", "著作", "叠", "疊", "《關於我和鬼變成家人的那件事》",
+	} {
+		once := ToSimplified(in)
+		if twice := ToSimplified(once); twice != once {
+			t.Errorf("ToSimplified(%q) = %q but folding again gives %q", in, once, twice)
+		}
+	}
+}
+
+// The fold is per character, so it also rewrites kanji shared with Japanese.
+// That is a consequence of the approach rather than a goal, and it is pinned
+// down here so it stays a decision instead of a surprise. It is harmless for
+// matching because both sides of a comparison are folded the same way.
+func TestToSimplifiedAlsoMovesJapaneseKanji(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{"鬼滅の刃", "鬼灭の刃"},
+		{"呪術廻戦", "呪术廻戦"},
+		{"名探偵コナン", "名探侦コナン"},
+		// Kana are untouched, so a name in kana alone keeps its shape.
+		{"この素晴らしい世界に祝福を", "この素晴らしい世界に祝福を"},
+		{"葬送のフリーレン", "葬送のフリーレン"},
+	}
+	for _, tc := range cases {
+		if got := ToSimplified(tc.in); got != tc.want {
+			t.Errorf("ToSimplified(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
 }
 
 func TestParseEmpty(t *testing.T) {

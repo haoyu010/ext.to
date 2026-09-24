@@ -637,6 +637,9 @@
           优先使用详情页提供的 IMDb 编号（<span class="kbd">tt</span> 开头）通过 TMDB 的
           <span class="kbd">/find</span> 接口定位条目；没有编号时才按标题搜索，且必须标题完全一致。
           标题只取发布名的首行，<b>不会</b>读取简介、分享、字幕、体积、标签等正文内容。
+          繁体发布名会自动折叠成简体再搜，因为 TMDB 按简体登记条目
+          （<span class="kbd">長安三萬里</span> → <span class="kbd">长安三万里</span>）；
+          带季数的名字则用基础名去搜，季数留到推送正文里。
         </p>
         <label class="field">
           <span class="lbl">TMDB API Key</span>

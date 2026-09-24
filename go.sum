@@ -1,3 +1,5 @@
+github.com/siongui/gojianfan v0.0.0-20210926212422-2f175ac615de h1:1/P9CcR8iENN9ybbSRWohRd3rsPp9tEWlTS/7ygvjHE=
+github.com/siongui/gojianfan v0.0.0-20210926212422-2f175ac615de/go.mod h1:TRwEEJlrSIv+jc66k48huOZ2aKVBPL8V29ZcsjUIH70=
 golang.org/x/net v0.59.0 h1:5zfYln+w5XCxwrnMMJPufRgNoXEaGxl0wo5GqPXyues=
 golang.org/x/net v0.59.0/go.mod h1:2DA/G1UfVbCpQPeWTmMPGY7Cs2PkBkwu743bVX5PIVg=
 gopkg.in/check.v1 v0.0.0-20161208181325-20d25e280405 h1:yhCVgyC4o1eVCa2tZl7eS0r+SDo693bJlVdllGtEeKM=

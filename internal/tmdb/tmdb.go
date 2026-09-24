@@ -322,7 +322,14 @@ func (c *Client) byTitle(ctx context.Context, title string, parsed media.Result)
 		var out struct {
 			Results []searchResult `json:"results"`
 		}
-		q := url.Values{"query": {title}, "language": {c.Lang}}
+		// The query is folded to simplified, because TMDB indexes the entry
+		// under its zh-CN name while the release may state the traditional one.
+		// Measured: 進擊的巨人 最終季 returns no results at all, and its folded
+		// form returns the entries the comparison then confirms. Folding here
+		// rather than in the caller is what makes it effective: candidateTitles
+		// dedupes on Normalize, which already folds, so a folded variant offered
+		// as an extra candidate would be discarded as a duplicate of this one.
+		q := url.Values{"query": {media.ToSimplified(title)}, "language": {c.Lang}}
 		if err := c.get(ctx, "/search/"+kind, q, &out); err != nil {
 			return Entry{}, err
 		}
