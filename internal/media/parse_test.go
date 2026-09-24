@@ -305,37 +305,6 @@ func TestSearchTitlesSplitScripts(t *testing.T) {
 	}
 }
 
-// A season marker written in Chinese is not part of the name TMDB stores: the
-// entry is "一人之下" and no entry is called "一人之下 第六季", so searching the
-// name as published finds nothing and a Chinese animation release is dropped.
-//
-// This is the shape mainland animation ships in, and neither of the existing
-// marker patterns recognised it: one accepts only Arabic digits and Latin
-// words after the separator, the other only digits and roman numerals.
-func TestSearchTitlesStripChineseSeasonMarker(t *testing.T) {
-	cases := []struct {
-		in   string
-		want string
-	}{
-		{"一人之下 第六季", "一人之下"},
-		{"一人之下第六季", "一人之下"},
-		{"吞噬星空 第2季", "吞噬星空"},
-		{"斗罗大陆 第10部", "斗罗大陆"},
-	}
-	for _, tc := range cases {
-		if got := stripSequelMarker(tc.in); got != tc.want {
-			t.Errorf("stripSequelMarker(%q) = %q, want %q", tc.in, got, tc.want)
-		}
-	}
-	// A name that merely contains the character must survive: only a season
-	// marker at the very end is removed.
-	for _, in := range []string{"第六季", "一人之下", "第十九层空间", "第五元素 电影"} {
-		if got := stripSequelMarker(in); got != "" {
-			t.Errorf("stripSequelMarker(%q) = %q, want no change", in, got)
-		}
-	}
-}
-
 // Bracketed groups are metadata wherever they sit. A trailing group such as an
 // episode range or a resolution cannot be left in a search term: TMDB matches
 // nothing against "名称 [01-12][1080p]", so the release resolves to nothing at
@@ -352,6 +321,134 @@ func TestSearchTitlesStripTrailingGroups(t *testing.T) {
 	for _, g := range got {
 		if strings.ContainsAny(g, "[]【】") {
 			t.Errorf("candidate %q still carries a bracket", g)
+		}
+	}
+}
+
+// A season marker must never reach TMDB as part of the query. TMDB files a
+// series as one entry covering every season, so it has no entry called
+// "一人之下 第六季" and that search comes back empty: offering it first spends a
+// request on a query that cannot succeed, and offering only it means the
+// release never resolves at all.
+//
+// The name as published must not be offered either. This is the difference
+// from a sequel marker, which is only ever an extra attempt; here the marked
+// name is the one form that cannot match, so it is replaced rather than
+// appended.
+func TestSearchTitlesReplaceSeasonMarkerWithBaseName(t *testing.T) {
+	cases := []struct {
+		in    string
+		base  string
+		first string
+	}{
+		{"[动漫] 一人之下 第六季 - 12", "一人之下", "一人之下"},
+		{"一人之下第六季", "一人之下", "一人之下"},
+		{"吞噬星空 第2季", "吞噬星空", "吞噬星空"},
+		{"斗罗大陆 第10部", "斗罗大陆", "斗罗大陆"},
+	}
+	for _, tc := range cases {
+		got := SearchTitles(tc.in)
+		if len(got) == 0 {
+			t.Errorf("SearchTitles(%q) offered nothing", tc.in)
+			continue
+		}
+		if got[0] != tc.first {
+			t.Errorf("SearchTitles(%q)[0] = %q, want the base name %q", tc.in, got[0], tc.first)
+		}
+		for _, g := range got {
+			if strings.Contains(g, "季") || strings.Contains(g, "部") {
+				t.Errorf("SearchTitles(%q) offered %q, which carries the season marker", tc.in, g)
+			}
+		}
+	}
+}
+
+// ChineseSeasonMarker has to report the base name and the marker separately,
+// because the search uses one and the caption uses the other.
+func TestChineseSeasonMarker(t *testing.T) {
+	cases := []struct{ in, base, marker string }{
+		{"一人之下 第六季", "一人之下", "第六季"},
+		{"一人之下第六季", "一人之下", "第六季"},
+		{"吞噬星空 第2季", "吞噬星空", "第2季"},
+		{"斗罗大陆 第10部", "斗罗大陆", "第10部"},
+		{"名称 - 第二季", "名称", "第二季"},
+		{"毛骗 第二季", "毛骗", "第二季"},
+		// Trailing metadata sits after the marker and must not hide it.
+		{"时光代理人 第三季 [01-12][1080p]", "时光代理人", "第三季"},
+		// A film sequel is not a season, and stripping it would resolve the
+		// sequel to the first film, so it must not be reported as one.
+		{"流浪地球2", "", ""},
+		{"Clevatess II", "", ""},
+		// No marker at all.
+		{"一人之下", "", ""},
+		{"流浪地球", "", ""},
+	}
+	for _, tc := range cases {
+		base, marker := ChineseSeasonMarker(tc.in)
+		if base != tc.base || marker != tc.marker {
+			t.Errorf("ChineseSeasonMarker(%q) = (%q, %q), want (%q, %q)",
+				tc.in, base, marker, tc.base, tc.marker)
+		}
+	}
+}
+
+// The season a release states is recorded, because the TMDB match identifies
+// the series and the entry covers every season: only the release name says
+// which instalment it is, and the caption has to show that.
+func TestParseRecordsChineseSeason(t *testing.T) {
+	cases := []struct {
+		in     string
+		season int
+		kind   Kind
+	}{
+		{"[动漫] 一人之下 第六季 - 12", 6, KindTV},
+		{"[喵萌奶茶屋] 时光代理人 第三季 [01-12][1080p]", 3, KindTV},
+		{"斗罗大陆 第10部 - 01", 10, KindTV},
+		{"某剧 第十八季", 18, KindTV},
+		{"某剧 第二十三季", 23, KindTV},
+		// A film sequel states no season.
+		{"[电影] 流浪地球2 (2023)", 0, KindMovie},
+		// A name with no marker states none.
+		{"[剧集] 三体 (2023)", 0, KindTV},
+	}
+	for _, tc := range cases {
+		got := Parse(tc.in)
+		if got.Season != tc.season {
+			t.Errorf("Parse(%q).Season = %d, want %d", tc.in, got.Season, tc.season)
+		}
+		if got.Kind != tc.kind {
+			t.Errorf("Parse(%q).Kind = %q, want %q", tc.in, got.Kind, tc.kind)
+		}
+	}
+}
+
+// The season is only ever read from a marker that stands at the end, so a
+// number carried elsewhere in a name is not mistaken for one.
+func TestChineseSeasonRejectsNonMarkers(t *testing.T) {
+	for _, in := range []string{
+		"十八季的怪谈",
+		"第十季风云",
+		"我们的第一季回忆",
+		"第10集",
+		"第三期",
+	} {
+		base, marker := ChineseSeasonMarker(in)
+		if base != "" || marker != "" {
+			t.Errorf("ChineseSeasonMarker(%q) = (%q, %q), want no marker", in, base, marker)
+		}
+	}
+}
+
+// A season marker belongs to ChineseSeasonMarker alone, because removing it is
+// not the whole job: the stripped name has to replace the name as published,
+// and the marker has to survive for choosing between instalments. Gathering
+// the two into one function silently made this branch unreachable, so the
+// division is asserted here.
+func TestStripSequelMarkerLeavesSeasonMarkers(t *testing.T) {
+	for _, in := range []string{"一人之下 第六季", "一人之下第六季", "吞噬星空 第2季", "斗罗大陆 第10部"} {
+		if got := stripSequelMarker(in); got != "" {
+			t.Errorf("stripSequelMarker(%q) = %q, want no change: a season marker is not a sequel marker",
+				in, got)
 		}
 	}
 }

@@ -492,6 +492,13 @@ func templateData(it scrape.Item, entry tmdb.Entry, magnet, ruleCategory string)
 		d.TMDBType = entry.Type
 		d.TMDBOverview = entry.Overview
 	}
+	// The season and episode come from the release name, never from the TMDB
+	// entry. A TMDB series covers every season in one entry, so the entry can
+	// only say which work the release is; which instalment it is exists only in
+	// the release name, and that is what the caption has to show.
+	parsed := media.Parse(it.Title)
+	d.Season = parsed.Season
+	d.Episode = parsed.Episode
 	return d
 }
 

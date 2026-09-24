@@ -20,7 +20,7 @@ const DefaultTemplate = `<b>{title}</b>
 // TMDBTemplate is an optional caption preset that leads with the matched
 // TMDB entry. It is offered in the dashboard rather than applied by default,
 // because it only renders well once a TMDB key is configured.
-const TMDBTemplate = `<b>{tmdb_title}</b> ({tmdb_year})
+const TMDBTemplate = `<b>{tmdb_title}</b>{season_label} ({tmdb_year})
 ⭐ {tmdb_rating}/10 · {tmdb_votes} votes
 
 📁 {category_tmdb}
@@ -45,6 +45,9 @@ var TemplateFields = []struct{ Key, Desc string }{
 	{"{tmdb_type}", "movie 或 tv"},
 	{"{tmdb_overview}", "TMDB 简介，会按 Telegram 限制截断"},
 	{"{category_tmdb}", "TMDB 分类规则命中的分类，例如 国漫、国产剧，未命中时为「未分类」"},
+	{"{season}", "季数，例如 6；发布名未写季数时为空。TMDB 的剧集条目含全部季，季数只来自发布名"},
+	{"{season_label}", "「 第 6 季」（含前导空格，便于直接接在标题后）；无季数时为空"},
+	{"{episode}", "集数，例如 12；发布名未写集数时为空"},
 	{"{category}", "分类路径，例如 Movies - Highres Movies"},
 	{"{size}", "可读体积，例如 1.43 GB"},
 	{"{files}", "种子内文件数"},
@@ -83,6 +86,12 @@ type TemplateData struct {
 	TMDBID            int
 	TMDBType          string
 	TMDBOverview      string
+	// Season and Episode are the numbers the release name stated, and are zero
+	// when it stated none. They come from the release name rather than from
+	// TMDB, because a TMDB series entry covers every season: the entry says
+	// which work a release is, and only the release name says which instalment.
+	Season  int
+	Episode int
 	// RuleCategory is the name the classification rules produced from the TMDB
 	// match, such as 国漫. It is distinct from Category, which is the tracker's
 	// own path and says nothing about region or medium.
@@ -125,6 +134,23 @@ func Render(tpl string, d TemplateData) string {
 	if ruleCategory == "" {
 		ruleCategory = d.Category
 	}
+	// A release with no season is a film or a complete-series pack, so the
+	// placeholders render empty rather than as a misleading "0".
+	season, episode := "", ""
+	if d.Season > 0 {
+		season = fmt.Sprint(d.Season)
+	}
+	if d.Episode > 0 {
+		episode = fmt.Sprint(d.Episode)
+	}
+	// The label carries its own leading space so a template can put it straight
+	// after the title without leaving a gap when there is no season: the
+	// preset renders "<b>名称</b> 第 6 季 (2016)" and, for a film,
+	// "<b>名称</b> (2023)" rather than a double space or a stray separator.
+	seasonLabel := ""
+	if season != "" {
+		seasonLabel = " 第 " + season + " 季"
+	}
 	rep := strings.NewReplacer(
 		"{title}", escape(d.Title),
 		"{tmdb_title}", escape(tmdbTitle),
@@ -137,6 +163,9 @@ func Render(tpl string, d TemplateData) string {
 		"{tmdb_type}", escape(d.TMDBType),
 		"{tmdb_overview}", escape(truncateRunes(d.TMDBOverview, 320)),
 		"{category_tmdb}", escape(ruleCategory),
+		"{season}", escape(season),
+		"{season_label}", escape(seasonLabel),
+		"{episode}", escape(episode),
 		"{category}", escape(d.Category),
 		"{size}", escape(d.Size),
 		"{files}", fmt.Sprint(d.Files),

@@ -196,6 +196,22 @@ func Parse(raw string) Result {
 		res.Kind = KindTV
 	}
 
+	// A Chinese season marker states the season outright ("一人之下 第六季"), so
+	// the number is recorded rather than left to the caption: the TMDB match
+	// identifies the series, which covers every season, and the season exists
+	// only in the release name.
+	//
+	// It is read here rather than in the chain above because that chain stops at
+	// the first marker it finds, and a name carries the season and the episode
+	// in a fixed order: "时光代理人 第三季 [01-12]" has both, and cutting at the
+	// season would leave the episode range in the title.
+	if res.Season == 0 {
+		if n, ok := chineseSeasonNumber(s); ok {
+			res.Season = n
+			res.Kind = KindTV
+		}
+	}
+
 	if y, at := findYear(s); y != 0 {
 		cut = min(cut, at)
 		res.Year = y
@@ -482,6 +498,24 @@ func SearchTitles(raw string) []string {
 		if len([]rune(s)) < 2 || seen[s] {
 			return
 		}
+
+		// A season marker is not part of the name TMDB stores. TMDB files a
+		// series as one entry covering every season, so it has no entry called
+		// "一人之下 第六季" and searching that name comes back empty; the base
+		// name is the only one that can match. It is therefore searched in
+		// place of the name as published, not after it, so a 国漫 release does
+		// not spend a request on a query that cannot succeed.
+		//
+		// The name as published is still offered when the marked name could
+		// itself be an entry: "毛骗 第二季" and "神探联盟第二季" are entries
+		// whose own names carry the season, and the base search returns them
+		// too, but only the caller comparing the marker can tell them from the
+		// first season beside them.
+		if base, marker := ChineseSeasonMarker(s); base != "" && marker != "" {
+			add(base)
+			return
+		}
+
 		seen[s] = true
 		out = append(out, s)
 
@@ -622,6 +656,12 @@ func hasHan(s string) bool {
 
 // stripSequelMarker removes a trailing sequel marker. It returns "" when
 // nothing was removed or when the remainder is too short to be a title.
+//
+// A Chinese season marker is not handled here, because it is not merely
+// removed: the name without it has to replace the name as published rather
+// than be added after it, and the marker itself is still needed to choose
+// between instalments. SearchTitles does both before calling this, so a name
+// reaching here carries no season marker.
 func stripSequelMarker(s string) string {
 	// The glued alternative captures the title without its final Han
 	// character, because the marker is what immediately follows it. Trying the
@@ -631,8 +671,6 @@ func stripSequelMarker(s string) string {
 		rest = m[1]
 	} else if m := reSequelGlued.FindStringSubmatch(s); m != nil {
 		rest = m[1] + m[2]
-	} else if m := reSequelSeason.FindStringSubmatch(s); m != nil {
-		rest = m[1]
 	}
 	rest = strings.TrimSpace(strings.Trim(rest, " -–—_.·:;,"))
 	if len([]rune(rest)) < 2 || isNumericFragment(rest) {
@@ -666,7 +704,110 @@ var reSequelGlued = regexp.MustCompile(`(?s)^(.+?)(\p{Han})(?:\d{1,2}|[IVX]{1,5}
 // accepts Arabic digits and Latin words after the separator, and reSequelGlued
 // requires the marker to be digits or roman numerals. A season written as
 // 第六季 matched neither, so the name was searched whole and never resolved.
-var reSequelSeason = regexp.MustCompile(`(?s)^(.+?)\s*第\s*[0-9０-９一二三四五六七八九十百]+\s*[季部期]$`)
+var reSequelSeason = regexp.MustCompile(`(?s)^(.+?)\s*(第\s*[0-9０-９一二三四五六七八九十百]+\s*[季部期])$`)
+
+// ChineseSeasonMarker splits a release name into the name of the work and the
+// season marker it carries, for example "一人之下 第六季" into "一人之下" and
+// "第六季". It returns an empty marker when the name carries none.
+//
+// Searching the marker is what fails, and it fails hard: TMDB files a series
+// as one entry covering every season, so it has no entry called "一人之下
+// 第六季" and the search comes back empty. The base name is what TMDB knows.
+//
+// The marker is returned rather than discarded for two reasons. It has to be
+// put back into the forwarded caption, because the match now identifies the
+// series and the season is only in the release name. And dropping it can pick
+// the wrong instalment: "毛骗 第二季" is its own entry beside "毛骗", so a
+// search that ignores the marker has nothing to tell the two apart.
+//
+// This is deliberately narrower than stripSequelMarker, which also removes a
+// bare number or a roman numeral. Those cannot be treated the same way,
+// because TMDB gives a film an entry per instalment: "流浪地球2" is a separate
+// entry from "流浪地球", and searching the stripped "流浪地球" would resolve a
+// sequel to the first film. "第 N 季" is unambiguous in a way a bare "2" is
+// not, so only that form is split here.
+//
+// Trailing bracketed groups are removed first, because they sit after the
+// marker ("时光代理人 第三季 [01-12][1080p]") and would otherwise hide it.
+func ChineseSeasonMarker(s string) (base, marker string) {
+	s = strings.TrimSpace(stripBracketGroups(s))
+	m := reSequelSeason.FindStringSubmatch(s)
+	if m == nil {
+		return "", ""
+	}
+	base = strings.TrimSpace(strings.Trim(m[1], " -–—_.·:;,"))
+	if len([]rune(base)) < 2 || isNumericFragment(base) {
+		return "", ""
+	}
+	return base, strings.TrimSpace(m[2])
+}
+
+// reChineseSeasonNumber captures just the digits of a Chinese season marker,
+// anywhere in the name rather than only at the end.
+var reChineseSeasonNumber = regexp.MustCompile(`第\s*([0-9０-９]{1,3}|[一二三四五六七八九十百]+)\s*[季部期]`)
+
+// chineseSeasonNumber reads the season a Chinese marker states, reporting
+// false when the name carries none.
+//
+// It scans the whole name rather than its tail because the marker is followed
+// by other fields: "时光代理人 第三季 [01-12]" states its season in the middle.
+func chineseSeasonNumber(s string) (int, bool) {
+	m := reChineseSeasonNumber.FindStringSubmatch(s)
+	if m == nil {
+		return 0, false
+	}
+	if n, err := strconv.Atoi(m[1]); err == nil {
+		if n <= 0 {
+			return 0, false
+		}
+		return n, true
+	}
+	n, ok := chineseNumber(m[1])
+	if !ok || n <= 0 {
+		return 0, false
+	}
+	return n, true
+}
+
+// chineseDigit maps the numerals that appear in a season marker to their value.
+var chineseDigit = map[rune]int{
+	'一': 1, '二': 2, '三': 3, '四': 4, '五': 5,
+	'六': 6, '七': 7, '八': 8, '九': 9,
+}
+
+// chineseNumber parses the numerals a season marker uses, up to the hundreds.
+// Seasons beyond that do not occur, and guessing at forms such as 零 would add
+// cases nothing exercises.
+func chineseNumber(s string) (int, bool) {
+	if s == "" {
+		return 0, false
+	}
+	total, current := 0, 0
+	for _, r := range s {
+		switch {
+		case r == '十':
+			// "十" alone is ten; "二十" is twenty; "十八" is eighteen.
+			if current == 0 {
+				current = 1
+			}
+			total += current * 10
+			current = 0
+		case r == '百':
+			if current == 0 {
+				current = 1
+			}
+			total += current * 100
+			current = 0
+		default:
+			d, ok := chineseDigit[r]
+			if !ok {
+				return 0, false
+			}
+			current = d
+		}
+	}
+	return total + current, true
+}
 
 // reDubbingMarker matches a trailing dub or subtitle note.
 //

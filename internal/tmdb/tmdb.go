@@ -330,10 +330,33 @@ func (c *Client) byTitle(ctx context.Context, title string, parsed media.Result)
 	}
 
 	want := media.Normalize(title)
+	// When the release name carried a season marker, the query is the base name
+	// and the marker is what distinguishes the instalment. TMDB sometimes files
+	// a season as its own entry ("毛骗 第二季") beside the base one ("毛骗"), and
+	// both come back for the base query, so the marker decides.
+	_, seasonMarker := media.ChineseSeasonMarker(parsed.Title)
 
 	// Pass 1: the entry's own name.
 	for _, kind := range kinds {
 		var exact []searchResult
+		// A candidate carrying the marker is the instalment the release names,
+		// so it is resolved on its own before the others are considered. Doing
+		// this for the release kind only keeps the marker from being applied to
+		// a kind the release never claimed.
+		if seasonMarker != "" && kind == string(parsed.Kind) {
+			var marked []searchResult
+			for _, r := range responses[kind] {
+				if !yearCompatible(kind, parsed.Year, yearFrom(r.ReleaseDate, r.FirstAirDate)) {
+					continue
+				}
+				if nameCarriesMarker(r.ownNames(), seasonMarker) {
+					marked = append(marked, r)
+				}
+			}
+			if e, ok := c.pickBest(ctx, kind, parsed, marked, 0.9); ok {
+				return e, nil
+			}
+		}
 		for _, r := range responses[kind] {
 			if !yearCompatible(kind, parsed.Year, yearFrom(r.ReleaseDate, r.FirstAirDate)) {
 				continue
@@ -413,6 +436,30 @@ func matchesAnyName(names []string, want string) bool {
 	}
 	for _, n := range names {
 		if media.Normalize(n) == want {
+			return true
+		}
+	}
+	return false
+}
+
+// nameCarriesMarker reports whether one of the names contains the season
+// marker a release stated, for example "毛骗 第二季 (2011)" for "第二季".
+//
+// The comparison is a containment test rather than an equality one because the
+// marker is part of a longer name. It is deliberately not used to accept a
+// match on its own: a name carrying the marker is still resolved through the
+// same exact-name check as any other, so this only changes which candidates
+// are considered first.
+func nameCarriesMarker(names []string, marker string) bool {
+	if marker == "" {
+		return false
+	}
+	want := media.Normalize(marker)
+	if want == "" {
+		return false
+	}
+	for _, n := range names {
+		if strings.Contains(media.Normalize(n), want) {
 			return true
 		}
 	}

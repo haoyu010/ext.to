@@ -24,6 +24,51 @@ func TestRenderTMDBFields(t *testing.T) {
 	}
 }
 
+// A matched series must render the season the release stated, and it must come
+// from the release name rather than from TMDB: a TMDB series covers every
+// season in one entry, so the entry can only say which work the release is.
+//
+// The label carries its own leading space, so a template can put it straight
+// after the title: a film renders without a gap or a stray separator, which is
+// the case that a template written as "<b>{tmdb_title}</b> {season_label}"
+// would get wrong.
+func TestRenderSeasonLabel(t *testing.T) {
+	cases := []struct {
+		name string
+		data TemplateData
+		want string
+	}{
+		{
+			name: "series with a stated season",
+			data: TemplateData{TMDBTitle: "一人之下", TMDBYear: 2016, TMDBID: 67063, TMDBType: "tv", Season: 6},
+			want: "<b>一人之下</b> 第 6 季 (2016)",
+		},
+		{
+			name: "film states no season",
+			data: TemplateData{TMDBTitle: "流浪地球2", TMDBYear: 2023, TMDBID: 842675, TMDBType: "movie"},
+			want: "<b>流浪地球2</b> (2023)",
+		},
+		{
+			name: "series with no stated season",
+			data: TemplateData{TMDBTitle: "三体", TMDBYear: 2023, TMDBID: 204541, TMDBType: "tv"},
+			want: "<b>三体</b> (2023)",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := Render(`<b>{tmdb_title}</b>{season_label} ({tmdb_year})`, tc.data)
+			if got != tc.want {
+				t.Errorf("Render =\n  %q\nwant\n  %q", got, tc.want)
+			}
+		})
+	}
+	// A season of zero is not a season: an unmatched release, or a complete
+	// pack, must not render "第 0 季".
+	if got := Render("{season}|{season_label}|{episode}", TemplateData{}); got != "||" {
+		t.Errorf("empty numbers rendered as %q, want three empty fields", got)
+	}
+}
+
 // An unmatched release must not render dangling values or stray separators.
 func TestRenderUnmatchedFallsBackToTorrentFields(t *testing.T) {
 	got := Render("{tmdb_title}|{tmdb_year}|{tmdb_rating}|{tmdb_votes}|{tmdb_url}",
