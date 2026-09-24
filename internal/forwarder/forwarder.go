@@ -16,6 +16,7 @@ import (
 
 	"github.com/haoyu010/ext.to/internal/config"
 	"github.com/haoyu010/ext.to/internal/media"
+	"github.com/haoyu010/ext.to/internal/rules"
 	"github.com/haoyu010/ext.to/internal/scrape"
 	"github.com/haoyu010/ext.to/internal/store"
 	"github.com/haoyu010/ext.to/internal/telegram"
@@ -54,6 +55,21 @@ type RunReport struct {
 // TMDBOnly is enabled and no TMDB entry could be found. It is a skip, not a
 // delivery failure, so it must not inflate the failure count.
 var errNoMatch = errors.New("no tmdb match")
+
+// errCategoryBlocked marks a torrent that a classification rule or one of the
+// blacklists rejected after the TMDB match. Like errNoMatch it is a deliberate
+// skip rather than a delivery failure, so the run report stays readable.
+var errCategoryBlocked = errors.New("blocked by category rules")
+
+// ruleBlockError carries the operator-facing reason a release was blocked.
+// It matches errCategoryBlocked so the run loop can classify the skip with
+// errors.Is, while its message stays in the operator's language instead of
+// the internal marker.
+type ruleBlockError struct{ reason string }
+
+func (e *ruleBlockError) Error() string { return e.reason }
+
+func (e *ruleBlockError) Is(target error) bool { return target == errCategoryBlocked }
 
 // New creates a forwarder.
 func New(cfg *config.Store, state *store.Store, logger *log.Logger) *Forwarder {
@@ -176,7 +192,25 @@ func (f *Forwarder) run(ctx context.Context, rep *RunReport) error {
 	if err != nil {
 		return err
 	}
-
+	// The classification rules are compiled once per cycle rather than once
+	// per torrent, because they are applied after the TMDB match inside
+	// publish.
+	ruleFilter, err := newRuleFilter(settings)
+	if err != nil {
+		return err
+	}
+	// Classification reads TMDB metadata, so it cannot run without a key.
+	// Shipping a default rule set means a fresh install is in exactly that
+	// state, and applying the rules there would file every release as 未分类
+	// and let the blacklist discard the whole listing -- a silent empty
+	// channel that looks the same as "nothing new was posted". So the rules
+	// stand down instead, with one log line saying why.
+	if ruleFilter.Enabled() && strings.TrimSpace(settings.TMDBKey) == "" {
+		f.log.Printf("已配置 TMDB 分类规则，但尚未填写 TMDB API Key，分类过滤暂不生效")
+		if ruleFilter, err = newRuleFilter(config.Settings{}); err != nil {
+			return err
+		}
+	}
 	// First ever scan only records a baseline so the channel is not flooded
 	// with the entire current listing.
 	if !f.state.FirstRun() {
@@ -230,11 +264,15 @@ func (f *Forwarder) run(ctx context.Context, rep *RunReport) error {
 			// Keep well under Telegram's per-chat rate limit.
 			time.Sleep(1200 * time.Millisecond)
 		}
-		if err := f.publish(ctx, client, tg, movies, settings, it, threadID); err != nil {
-			if errors.Is(err, errNoMatch) {
+		if err := f.publish(ctx, client, tg, movies, settings, ruleFilter, it, threadID); err != nil {
+			if errors.Is(err, errNoMatch) || errors.Is(err, errCategoryBlocked) {
 				// Filtered out on purpose; neither sent nor a failure.
 				rep.Skipped++
-				f.log.Printf("跳过 %d（%s）：没有匹配到 TMDB 条目", it.ID, it.Title)
+				if errors.Is(err, errCategoryBlocked) {
+					f.log.Printf("跳过 %d（%s）：%v", it.ID, it.Title, err)
+				} else {
+					f.log.Printf("跳过 %d（%s）：没有匹配到 TMDB 条目", it.ID, it.Title)
+				}
 				continue
 			}
 			rep.Failed++
@@ -254,7 +292,7 @@ func (f *Forwarder) run(ctx context.Context, rep *RunReport) error {
 
 // publish resolves extras (TMDB match, magnet, poster) and sends one torrent.
 func (f *Forwarder) publish(ctx context.Context, client *scrape.Client, tg *telegram.Client,
-	movies *tmdb.Client, settings config.Settings, it scrape.Item, threadID int) error {
+	movies *tmdb.Client, settings config.Settings, rf *rules.Filter, it scrape.Item, threadID int) error {
 
 	// The detail page carries the poster, the IMDb id and the per-page magnet
 	// token, so one request serves all three.
@@ -280,6 +318,33 @@ func (f *Forwarder) publish(ctx context.Context, client *scrape.Client, tg *tele
 		return errNoMatch
 	}
 
+	// The tracker's 动漫 category holds Chinese, Japanese and Western
+	// animation alike, so "Chinese animation only" cannot be expressed as a
+	// tracker category. It is decided here, from the TMDB match, which is the
+	// only place the region and medium of the actual work are known.
+	//
+	// With no match there is no metadata to classify, so the release cannot be
+	// shown to belong to this channel. Guessing "probably Chinese" is not an
+	// option: the whole reason the rules exist is that the tracker's own
+	// category cannot answer the question. It is skipped with its own wording
+	// so the operator can tell it apart from a blacklist hit, which is a
+	// working filter rather than an unverifiable release.
+	if !matched && rf.Enabled() {
+		return &ruleBlockError{reason: "没有匹配到 TMDB 条目，无法确认分类"}
+	}
+
+	var decision rules.Decision
+	if matched {
+		decision = rf.Evaluate(entry.Type, ruleMetadata(entry), entry.Genres, entry.GenreNames)
+		// The category is recorded before the block is reported, so the history
+		// shows which category a dropped release was filed under instead of
+		// leaving the operator to guess why it was skipped.
+		f.state.MarkCategory(it.ID, decision.Category)
+		if decision.Blocked {
+			return &ruleBlockError{reason: decision.Reason}
+		}
+	}
+
 	var magnet string
 	if settings.WithMagnet && page != nil {
 		m, err := client.MagnetFromDetail(ctx, it, page)
@@ -291,7 +356,7 @@ func (f *Forwarder) publish(ctx context.Context, client *scrape.Client, tg *tele
 		}
 	}
 
-	caption := config.Render(settings.Template, templateData(it, entry, magnet))
+	caption := config.Render(settings.Template, templateData(it, entry, magnet, decision.Category))
 
 	photo := f.loadPoster(ctx, client, settings, it, detail, entry)
 
@@ -306,13 +371,39 @@ func (f *Forwarder) publish(ctx context.Context, client *scrape.Client, tg *tele
 		return err
 	}
 	f.state.MarkSentWithTMDB(it.ID, magnet, store.TMDBInfo{
-		ID:     entry.ID,
-		Type:   entry.Type,
-		Title:  entry.Title,
-		Year:   entry.Year,
-		Rating: entry.Rating,
+		ID:       entry.ID,
+		Type:     entry.Type,
+		Title:    entry.Title,
+		Year:     entry.Year,
+		Rating:   entry.Rating,
+		Category: decision.Category,
 	})
 	return nil
+}
+
+// ruleMetadata converts a TMDB match into the value set the rules match on.
+//
+// A movie has no origin_country in TMDB; it reports production_countries
+// instead. Filling both fields from what the entry actually carries lets one
+// rule file serve films and series with a single country field.
+func ruleMetadata(e tmdb.Entry) rules.Metadata {
+	return rules.Metadata{
+		Genres:              e.Genres,
+		OriginalLanguage:    e.OriginalLanguage,
+		OriginCountries:     e.OriginCountries,
+		ProductionCountries: e.ProductionCountries,
+		Year:                e.Year,
+	}
+}
+
+// newRuleFilter compiles the classification rules and the blacklists. It
+// returns a usable but disabled filter when none of them are configured.
+func newRuleFilter(s config.Settings) (*rules.Filter, error) {
+	rf, err := rules.NewFilter(s.CategoryRules, s.CategoryBlacklist, s.GenreBlacklist, s.GenreIDBlacklist)
+	if err != nil {
+		return nil, fmt.Errorf("分类规则无效：%w", err)
+	}
+	return rf, nil
 }
 
 // matchTMDB resolves the release against TMDB. A nil or unconfigured client,
@@ -374,20 +465,21 @@ func (f *Forwarder) loadPoster(ctx context.Context, client *scrape.Client, setti
 }
 
 // templateData builds the caption value set for one torrent.
-func templateData(it scrape.Item, entry tmdb.Entry, magnet string) config.TemplateData {
+func templateData(it scrape.Item, entry tmdb.Entry, magnet, ruleCategory string) config.TemplateData {
 	d := config.TemplateData{
-		Title:    it.Title,
-		Category: it.Category,
-		Size:     it.Size,
-		Files:    it.Files,
-		Seeds:    it.Seeds,
-		Leeches:  it.Leeches,
-		Age:      it.Age,
-		Source:   it.Uploader,
-		Uploader: it.Uploader,
-		URL:      it.URL,
-		Magnet:   magnet,
-		ID:       it.ID,
+		Title:        it.Title,
+		Category:     it.Category,
+		RuleCategory: ruleCategory,
+		Size:         it.Size,
+		Files:        it.Files,
+		Seeds:        it.Seeds,
+		Leeches:      it.Leeches,
+		Age:          it.Age,
+		Source:       it.Uploader,
+		Uploader:     it.Uploader,
+		URL:          it.URL,
+		Magnet:       magnet,
+		ID:           it.ID,
 	}
 	if entry.ID != 0 {
 		d.TMDBTitle = entry.Title

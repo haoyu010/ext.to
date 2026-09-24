@@ -13,11 +13,41 @@ import (
 	"testing"
 
 	"github.com/haoyu010/ext.to/internal/config"
+	"github.com/haoyu010/ext.to/internal/rules"
 	"github.com/haoyu010/ext.to/internal/scrape"
 	"github.com/haoyu010/ext.to/internal/store"
 	"github.com/haoyu010/ext.to/internal/telegram"
 	"github.com/haoyu010/ext.to/internal/tmdb"
 )
+
+// disabledRules is a filter with nothing configured, so publish behaves the
+// way it did before classification existed. Tests that care about the rules
+// build their own.
+func disabledRules(t *testing.T) *rules.Filter {
+	t.Helper()
+	rf, err := rules.NewFilter("", nil, nil, nil)
+	if err != nil {
+		t.Fatalf("rules.NewFilter: %v", err)
+	}
+	return rf
+}
+
+// chineseRules is the shipped rule set paired with a blacklist that keeps only
+// Chinese animation and Chinese TV, which is the configuration the operator
+// asked for.
+func chineseRules(t *testing.T) *rules.Filter {
+	t.Helper()
+	rf, err := newRuleFilter(config.Settings{
+		CategoryRules:     config.DefaultCategoryRules,
+		CategoryBlacklist: config.DefaultCategoryBlacklist,
+		GenreBlacklist:    config.DefaultGenreBlacklist,
+		GenreIDBlacklist:  config.DefaultGenreIDBlacklist,
+	})
+	if err != nil {
+		t.Fatalf("newRuleFilter: %v", err)
+	}
+	return rf
+}
 
 // capturedSend records one request received by the mock Telegram server.
 type capturedSend struct {
@@ -174,7 +204,7 @@ func TestPublishSendsPhotoWithCaptionAndMagnet(t *testing.T) {
 		Category: "Movies - Highres Movies",
 	}
 	if err := f.publish(context.Background(), client, telegram.New(settings.BotToken),
-		tmdb.New("", settings.TMDBLang), settings, item, 0); err != nil {
+		tmdb.New("", settings.TMDBLang), settings, disabledRules(t), item, 0); err != nil {
 		t.Fatalf("publish: %v", err)
 	}
 
@@ -242,7 +272,7 @@ func TestPublishFallsBackToPlainText(t *testing.T) {
 
 	item := scrape.Item{ID: 7, Slug: "x-7", Title: "Bad <tag>", URL: site.URL + "/torrent-page/"}
 	if err := f.publish(context.Background(), client, telegram.New(settings.BotToken),
-		tmdb.New("", settings.TMDBLang), settings, item, 0); err != nil {
+		tmdb.New("", settings.TMDBLang), settings, disabledRules(t), item, 0); err != nil {
 		t.Fatalf("publish should retry without markup: %v", err)
 	}
 	if len(*sent) < 2 {
@@ -279,7 +309,7 @@ func TestPublishWithoutMagnetStillPosts(t *testing.T) {
 
 	item := scrape.Item{ID: 11, Slug: "y-11", Title: "No Magnet", URL: site.URL + "/y-11/"}
 	if err := f.publish(context.Background(), client, telegram.New(settings.BotToken),
-		tmdb.New("", settings.TMDBLang), settings, item, 0); err != nil {
+		tmdb.New("", settings.TMDBLang), settings, disabledRules(t), item, 0); err != nil {
 		t.Fatalf("publish should succeed without a magnet: %v", err)
 	}
 	if len(*sent) != 1 {

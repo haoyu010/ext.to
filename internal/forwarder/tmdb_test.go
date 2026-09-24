@@ -156,7 +156,7 @@ func TestPublishEnrichesWithTMDB(t *testing.T) {
 	item := scrape.Item{ID: 4242, Slug: "x-4242", Title: "Some.Release.Name.2022.720p", URL: site.URL + "/x-4242/"}
 
 	if err := f.publish(context.Background(), client, telegram.New(settings.BotToken),
-		tmdbClient, settings, item, 0); err != nil {
+		tmdbClient, settings, disabledRules(t), item, 0); err != nil {
 		t.Fatalf("publish: %v", err)
 	}
 
@@ -218,7 +218,7 @@ func TestPublishTMDBOnlySkipsUnmatched(t *testing.T) {
 	item := scrape.Item{ID: 77, Slug: "x-77", Title: "Unknown.Film.1999.1080p", URL: srv.URL + "/x-77/"}
 
 	err := f.publish(context.Background(), client, telegram.New(settings.BotToken),
-		tmdbClient, settings, item, 0)
+		tmdbClient, settings, disabledRules(t), item, 0)
 	if err == nil {
 		t.Fatal("expected a no-match error under TMDBOnly")
 	}
@@ -261,7 +261,7 @@ func TestPublishSurvivesTMDBOutage(t *testing.T) {
 	item := scrape.Item{ID: 5, Slug: "x-5", Title: "Fallback.Name.2020.1080p", URL: site.URL + "/x-5/"}
 
 	if err := f.publish(context.Background(), client, telegram.New(settings.BotToken),
-		tmdbClient, settings, item, 0); err != nil {
+		tmdbClient, settings, disabledRules(t), item, 0); err != nil {
 		t.Fatalf("publish must survive a tmdb outage: %v", err)
 	}
 	if len(*sent) != 1 {
@@ -300,7 +300,7 @@ func TestUnmatchedIsSkipNotFailure(t *testing.T) {
 	client, _ := scrape.New(settings)
 
 	err := f.publish(context.Background(), client, telegram.New(settings.BotToken),
-		tmdbClient, settings,
+		tmdbClient, settings, disabledRules(t),
 		scrape.Item{ID: 3, Slug: "b-3", Title: "Unknown.Thing.1999", URL: site.URL + "/unknown/b-3/"}, 0)
 	if !errors.Is(err, errNoMatch) {
 		t.Fatalf("err = %v, want errNoMatch", err)
@@ -312,7 +312,7 @@ func TestUnmatchedIsSkipNotFailure(t *testing.T) {
 	// A matched torrent under the same configuration still delivers, proving
 	// the skip does not poison the rest of the cycle.
 	if err := f.publish(context.Background(), client, telegram.New(settings.BotToken),
-		tmdbClient, settings,
+		tmdbClient, settings, disabledRules(t),
 		scrape.Item{ID: 2, Slug: "g-2", Title: "Glass.Onion.2022.720p", URL: site.URL + "/g-2/"}, 0); err != nil {
 		t.Fatalf("matched torrent should be sent: %v", err)
 	}

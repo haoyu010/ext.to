@@ -388,6 +388,10 @@
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><path d="M4 5h16v14H4z"/><path d="M8 5v14M4 9h4M4 15h4"/><path d="M12 9h5M12 13h5"/></svg>
         <span>TMDB 匹配</span>
       </button>
+      <button data-pane="category">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6h16"/><path d="M7 12h13"/><path d="M10 18h10"/><path d="M4 12h.01M4 18h.01"/></svg>
+        <span>分类过滤</span>
+      </button>
       <button data-pane="telegram">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><path d="M21 4 3 11l6 2 2 6 4-5 6-10z"/></svg>
         <span>Telegram 推送</span>
@@ -683,6 +687,82 @@
       </div>
     </div>
 
+    <!-- ---------------------------- 分类过滤 ---------------------------- -->
+    <div class="pane" id="pane-category" hidden>
+      <div class="pagehead">
+        <div>
+          <h2>分类过滤</h2>
+          <p>用 TMDB 元数据判断影视的国别与类型，把不需要的分类挡在推送之前。</p>
+        </div>
+        <div class="grow"></div>
+        <button class="btn" id="btnUseDefaultRules" type="button">恢复默认规则</button>
+      </div>
+
+      <form id="categoryForm">
+        <div class="card">
+          <h3>为什么需要它</h3>
+          <p class="hint">
+            种子站的分类太粗：<span class="kbd">动漫</span> 里同时有国漫、日番和欧美动画，
+            单靠站点分类无法只留国漫。所以这里按 <b>TMDB 匹配结果的元数据</b> 分类，
+            再用下面的黑名单排除不要的分类。
+            分类依赖 TMDB，<b>没有填写 TMDB API Key 时本节规则不会生效</b>；
+            没有匹配到 TMDB 的条目会被跳过，因为无法确认它属于哪个分类。
+          </p>
+        </div>
+
+        <div class="card">
+          <h3>分类规则</h3>
+          <p class="hint">
+            YAML 格式，一级是 <span class="kbd">movie</span> / <span class="kbd">tv</span>，
+            二级是分类名。可用字段：<span class="kbd">genre_ids</span>、
+            <span class="kbd">original_language</span>、<span class="kbd">origin_country</span>、
+            <span class="kbd">production_countries</span>、<span class="kbd">release_year</span>。
+            同一分类内多个字段是「并且」，同一字段多个值用逗号分隔是「或者」，
+            值前加 <span class="kbd">!</span> 表示排除。
+            条件多的分类优先，条件数相同时按书写顺序；没有任何条件的分类是兜底。
+          </p>
+          <label class="field">
+            <span class="lbl">规则内容</span>
+            <textarea id="setCategoryRules" spellcheck="false" style="min-height:300px"></textarea>
+            <span class="help">点上方「恢复默认规则」可以还原成内置的国漫 / 国产剧判断规则。</span>
+          </label>
+        </div>
+
+        <div class="card">
+          <h3>TMDB 黑名单</h3>
+          <p class="hint">
+            命中任意一条就会被跳过。默认只保留 <b>国漫</b> 与 <b>国产剧</b>，
+            其余全部排除；上面的默认规则加上这些黑名单就等于「只推送国漫和国产剧」。
+          </p>
+          <div class="row">
+            <label class="field">
+              <span class="lbl">分类黑名单，一行一个</span>
+              <textarea id="setCategoryBlacklist" spellcheck="false" style="min-height:180px"></textarea>
+              <span class="help">填写的是分类规则里的名字，例如 欧美剧、日韩剧、日番、未分类。</span>
+            </label>
+            <label class="field">
+              <span class="lbl">TMDB 类型黑名单，一行一个</span>
+              <textarea id="setGenreBlacklist" spellcheck="false" style="min-height:180px"></textarea>
+              <span class="help">按 TMDB 返回的类型名排除，例如 真人秀。不区分大小写。</span>
+            </label>
+          </div>
+          <label class="field">
+            <span class="lbl">Genre ID，一行一个</span>
+            <textarea id="setGenreIDBlacklist" spellcheck="false" placeholder="99&#10;10764" style="min-height:120px"></textarea>
+            <span class="help">按 TMDB 类型编号排除，换语言也不会变，比中文名更可靠。</span>
+          </label>
+          <details>
+            <summary class="help" style="cursor:pointer">常用 Genre ID 对照表</summary>
+            <div class="chips" id="genreHint" style="margin-top:10px"></div>
+          </details>
+        </div>
+
+        <div class="actions">
+          <button class="btn primary" type="submit">保存设置</button>
+        </div>
+      </form>
+    </div>
+
     <!-- ---------------------------- Telegram ---------------------------- -->
     <div class="pane" id="pane-telegram" hidden>
       <div class="pagehead">
@@ -791,7 +871,7 @@
       <div class="card">
         <div class="tw">
           <table>
-            <thead><tr><th>标题</th><th>TMDB</th><th>大小</th><th>状态</th><th>时间</th></tr></thead>
+            <thead><tr><th>标题</th><th>TMDB</th><th>分类</th><th>大小</th><th>状态</th><th>时间</th></tr></thead>
             <tbody id="histBody"></tbody>
           </table>
         </div>
@@ -874,7 +954,12 @@
 
 const $ = (id) => document.getElementById(id);
 
-let META = { categories: [], ages: [], template_fields: [], default_template: "", tmdb_template: "", poster_sources: [] };
+let META = {
+  categories: [], ages: [], template_fields: [], default_template: "",
+  tmdb_template: "", poster_sources: [], default_category_rules: "",
+  default_category_blacklist: [], default_genre_blacklist: [],
+  default_genre_id_blacklist: [], genre_ids: []
+};
 let nextRunAt = null;
 let SETTINGS = {};
 let currentPane = "overview";
@@ -956,6 +1041,15 @@ function statusOf(r) {
   return '<span class="tag pending">待推送</span>';
 }
 
+// categoryOf renders the name the classification rules gave a record. It is
+// the only place a skip can be explained: the tracker category says
+// "Anime" for Chinese, Japanese and Western animation alike.
+function categoryOf(r) {
+  if (!r.rule_category) return '<span class="muted">—</span>';
+  return '<span class="tag ' + (r.tmdb_type === "tv" ? "tv" : "movie") + '">' +
+    esc(r.rule_category) + "</span>";
+}
+
 // tmdbOf renders the TMDB match for a record, when one was recorded.
 function tmdbOf(r) {
   if (!r.tmdb_matched || !r.tmdb_id) return '<span class="muted">—</span>';
@@ -993,6 +1087,19 @@ function renderMeta() {
     '<option value="' + a.id + '">' + esc(a.name) + "</option>").join("");
   $("fieldChips").innerHTML = META.template_fields.map((f) =>
     '<span class="chip" data-field="' + esc(f.key) + '" title="' + esc(f.desc) + '">' + esc(f.key) + "</span>").join("");
+  // A bare number says nothing about what it excludes, so the known ids are
+  // spelled out. Clicking one appends it to the box, which is far less
+  // error-prone than typing an id from memory.
+  $("genreHint").innerHTML = (META.genre_ids || []).map((g) =>
+    '<span class="chip" data-id="' + g.id + '">' + esc(g.name) + " " + g.id + "</span>").join("");
+  $("genreHint").onclick = (ev) => {
+    const chip = ev.target.closest(".chip");
+    if (!chip) return;
+    const box = $("setGenreIDBlacklist");
+    const lines = splitLines(box.value);
+    if (lines.indexOf(chip.dataset.id) < 0) lines.push(chip.dataset.id);
+    box.value = lines.join("\n") + "\n";
+  };
   $("fieldChips").onclick = (ev) => {
     const chip = ev.target.closest(".chip");
     if (!chip) return;
@@ -1039,6 +1146,10 @@ function fillSettings(s) {
   $("setTmdbLang").value = s.tmdb_lang || "zh-CN";
   $("setTmdbOnly").checked = !!s.tmdb_only;
   $("setPosterSource").value = s.poster_source || "auto";
+  $("setCategoryRules").value = s.category_rules || "";
+  $("setCategoryBlacklist").value = (s.category_blacklist || []).join("\n");
+  $("setGenreBlacklist").value = (s.genre_blacklist || []).join("\n");
+  $("setGenreIDBlacklist").value = (s.genre_id_blacklist || []).join("\n");
   $("setAdminUser").value = s.admin_user || "admin";
 
   $("sTelegram").textContent = s.bot_token ? "已配置" : "未配置";
@@ -1078,6 +1189,11 @@ function collectSettings() {
     tmdb_lang: $("setTmdbLang").value.trim(),
     tmdb_only: $("setTmdbOnly").checked,
     poster_source: $("setPosterSource").value,
+    category_rules: $("setCategoryRules").value,
+    category_blacklist: splitLines($("setCategoryBlacklist").value),
+    genre_blacklist: splitLines($("setGenreBlacklist").value),
+    genre_id_blacklist: splitLines($("setGenreIDBlacklist").value)
+      .map((x) => Number(x)).filter((n) => Number.isFinite(n) && n > 0),
     interval_seconds: Number($("setInterval").value) || 600,
     batch_size: Number($("setBatch").value) || 10,
     enabled: $("setEnabled").checked,
@@ -1152,7 +1268,7 @@ function renderRecent(records) {
 function renderHistory(records) {
   const body = $("histBody");
   if (!records || !records.length) {
-    body.innerHTML = '<tr><td colspan="5" class="empty">暂无记录。</td></tr>';
+    body.innerHTML = '<tr><td colspan="6" class="empty">暂无记录。</td></tr>';
     return;
   }
   body.innerHTML = records.map((r) => {
@@ -1161,7 +1277,8 @@ function renderHistory(records) {
       : esc(r.title);
     const when = r.sent_at ? fmtTime(r.sent_at) : fmtTime(r.first_seen);
     return "<tr><td class='title'>" + title + "</td><td>" + tmdbOf(r) + "</td><td>" +
-      esc(sizeText(r)) + "</td><td>" + statusOf(r) + "</td><td class='muted'>" + esc(when) + "</td></tr>";
+      categoryOf(r) + "</td><td>" + esc(sizeText(r)) + "</td><td>" + statusOf(r) +
+      "</td><td class='muted'>" + esc(when) + "</td></tr>";
   }).join("");
 }
 
@@ -1461,6 +1578,13 @@ function wire() {
 
   $("btnUseDefault").onclick = () => { $("setTemplate").value = META.default_template || ""; };
   $("btnUseTmdb").onclick = () => { $("setTemplate").value = META.tmdb_template || ""; };
+  $("btnUseDefaultRules").onclick = () => {
+    $("setCategoryRules").value = META.default_category_rules || "";
+    $("setCategoryBlacklist").value = (META.default_category_blacklist || []).join("\n");
+    $("setGenreBlacklist").value = (META.default_genre_blacklist || []).join("\n");
+    $("setGenreIDBlacklist").value = (META.default_genre_id_blacklist || []).join("\n");
+    toast("已填入默认规则", "确认无误后点「保存设置」才会生效。", "ok");
+  };
 
   $("lookupForm").addEventListener("submit", runLookup);
 
@@ -1498,6 +1622,7 @@ function wire() {
   $("settingsForm").addEventListener("submit", (e) => saveSettings(e, "抓取设置已生效。"));
   $("telegramForm").addEventListener("submit", (e) => saveSettings(e, "推送设置已生效。"));
   $("tmdbForm").addEventListener("submit", (e) => saveSettings(e, "TMDB 设置已生效。"));
+  $("categoryForm").addEventListener("submit", (e) => saveSettings(e, "分类过滤设置已生效。"));
   $("accountForm").addEventListener("submit", (e) => saveSettings(e, "下次登录请使用新凭据。"));
 }
 

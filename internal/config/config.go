@@ -14,6 +14,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/haoyu010/ext.to/internal/rules"
 )
 
 // Category identifiers used by ext.to's browse endpoint (cat= query param).
@@ -131,6 +133,22 @@ type Settings struct {
 	// the TMDB artwork and falls back to the tracker image, "tmdb" and
 	// "tracker" force one source.
 	PosterSource string `json:"poster_source"`
+	// --- classification -------------------------------------------------
+	// CategoryRules is a YAML rule set that names a category from the TMDB
+	// metadata of a match. Empty disables classification, which leaves the
+	// blacklists below with nothing to act on.
+	CategoryRules string `json:"category_rules"`
+	// CategoryBlacklist drops releases whose classified category is listed.
+	// The tracker's own category is far too coarse to tell a Chinese cartoon
+	// from a Japanese one, so the exclusion has to happen after the TMDB
+	// match, on the classified name.
+	CategoryBlacklist []string `json:"category_blacklist"`
+	// GenreBlacklist drops releases by TMDB genre name, for example 真人秀.
+	// Names are matched case-insensitively against the localised names.
+	GenreBlacklist []string `json:"genre_blacklist"`
+	// GenreIDBlacklist drops releases by TMDB genre id, which is stable
+	// across languages and therefore safer than a translated name.
+	GenreIDBlacklist []int `json:"genre_id_blacklist"`
 
 	// --- scheduling ----------------------------------------------------
 	IntervalSeconds int  `json:"interval_seconds"`
@@ -161,8 +179,15 @@ func Default() Settings {
 		TMDBLang:        "zh-CN",
 		TMDBOnly:        false,
 		PosterSource:    PosterSourceAuto,
-		AdminUser:       "admin",
-		AdminPassword:   "admin",
+		// Classification is on by default: a fresh install follows Chinese
+		// animation and Chinese TV rather than everything the tracker lists,
+		// which is what the rule set and the exclusion list together express.
+		CategoryRules:     DefaultCategoryRules,
+		CategoryBlacklist: append([]string(nil), DefaultCategoryBlacklist...),
+		GenreBlacklist:    append([]string(nil), DefaultGenreBlacklist...),
+		GenreIDBlacklist:  append([]int(nil), DefaultGenreIDBlacklist...),
+		AdminUser:         "admin",
+		AdminPassword:     "admin",
 	}
 }
 
@@ -248,6 +273,33 @@ func (s *Settings) Validate() error {
 	if s.MaxSizeMB > 0 && s.MinSizeMB > s.MaxSizeMB {
 		return fmt.Errorf("最小体积大于最大体积")
 	}
+	// A malformed rule file must be rejected when it is saved. Catching it
+	// during a scan instead would surface as a failed cycle with the reason
+	// buried in the log.
+	if strings.TrimSpace(s.CategoryRules) != "" {
+		if _, err := rules.Parse([]byte(s.CategoryRules)); err != nil {
+			return fmt.Errorf("分类规则无法解析：%w", err)
+		}
+	}
+	for _, id := range s.GenreIDBlacklist {
+		if id <= 0 {
+			return fmt.Errorf("Genre ID 必须是正整数，收到 %d", id)
+		}
+	}
+	// A category blacklist entry that matches no rule can never fire, and the
+	// usual cause is a typo or a stale name left over after editing the rules.
+	// Silently ignoring it would leave the operator believing a category is
+	// excluded when it is not.
+	if len(s.CategoryBlacklist) > 0 && strings.TrimSpace(s.CategoryRules) != "" {
+		if err := checkBlacklistNames(s.CategoryRules, s.CategoryBlacklist); err != nil {
+			return err
+		}
+	}
+	// Dropping every category would silently stop all forwarding, so an
+	// accidental all-blacklist entry is reported rather than obeyed.
+	if len(s.CategoryBlacklist) > 0 && strings.TrimSpace(s.CategoryRules) == "" {
+		return fmt.Errorf("填写了分类黑名单，但没有分类规则可用；请先配置分类规则")
+	}
 	if s.Enabled {
 		if s.BotToken == "" {
 			return fmt.Errorf("开启监听前请先填写机器人 Token")
@@ -258,6 +310,36 @@ func (s *Settings) Validate() error {
 		if s.Clearance == "" {
 			return fmt.Errorf("开启监听前请先填写 cf_clearance Cookie")
 		}
+	}
+	return nil
+}
+
+// checkBlacklistNames reports names on the blacklist that no rule defines, so a
+// silently ineffective exclusion is caught when it is saved.
+func checkBlacklistNames(ruleYAML string, blacklist []string) error {
+	c, err := rules.Parse([]byte(ruleYAML))
+	if err != nil {
+		// The rule document is validated separately; a parse failure here
+		// would be reported twice.
+		return nil
+	}
+	known := map[string]bool{}
+	for _, n := range c.Names() {
+		known[n] = true
+	}
+	// 未分类 is produced whenever a release is matched but named by no rule,
+	// so it is a valid entry even when the rule set has no catch-all for it.
+	known[rules.Unclassified] = true
+	var unknown []string
+	for _, name := range blacklist {
+		name = strings.TrimSpace(name)
+		if name != "" && !known[name] {
+			unknown = append(unknown, name)
+		}
+	}
+	if len(unknown) > 0 {
+		return fmt.Errorf("分类黑名单里的 %s 在分类规则中不存在，请核对名称或补上对应规则",
+			strings.Join(unknown, "、"))
 	}
 	return nil
 }

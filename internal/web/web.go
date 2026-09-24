@@ -282,6 +282,16 @@ func metaPayload() map[string]any {
 		"default_template": config.DefaultTemplate,
 		"tmdb_template":    config.TMDBTemplate,
 		"poster_sources":   config.PosterSources,
+		// The classification defaults are offered in the panel so an operator
+		// who edits the rules and regrets it can get the shipped set back
+		// without knowing the YAML by heart.
+		"default_category_rules":     config.DefaultCategoryRules,
+		"default_category_blacklist": config.DefaultCategoryBlacklist,
+		"default_genre_blacklist":    config.DefaultGenreBlacklist,
+		"default_genre_id_blacklist": config.DefaultGenreIDBlacklist,
+		// The genre ids an operator is most likely to want are worth spelling
+		// out, because a number alone does not say what it excludes.
+		"genre_ids": config.KnownGenreIDs,
 	}
 }
 

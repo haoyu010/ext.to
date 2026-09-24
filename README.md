@@ -10,8 +10,9 @@
 - **关键词过滤** — 包含 / 排除正则表达式，以及最小 / 最大体积限制
 - **完整推送内容** — 标题、分类、体积、文件数、做种数、下载数、发布时间、详情页链接、**magnet 磁力链接**、**原始海报图**
 - **TMDB 匹配** — 用详情页的 IMDb 编号或发布名首行标题匹配 TMDB，补全中文标题、评分、海报，支持「只推送匹配到 TMDB 的种子」
+- **分类过滤（可按国别/类型收窄频道）** — 按 TMDB 元数据把条目归类为 国漫 / 日番 / 国产剧 / 欧美剧 / 日韩剧 / 综艺 / 纪录片 等，再用分类黑名单、类型名黑名单与 Genre ID 黑名单排除；默认配置即「只推送国漫与国产剧」
 - **首次运行建立基线** — 不会把整站历史灌进你的频道，只从下一次扫描开始推送新帖
-- **Web 管理面板（中文）** — 左侧导航分页：总览 / 转发记录 / 运行日志 / 抓取来源 / TMDB 匹配 / Telegram 推送 / 面板设置
+- **Web 管理面板（中文）** — 左侧导航分页：总览 / 转发记录 / 运行日志 / 抓取来源 / TMDB 匹配 / 分类过滤 / Telegram 推送 / 面板设置，每个分栏都有独立的「保存设置」
 - **凭证打码** — 接口不会回传明文 Bot Token 与 Cookie
 - **无需登录 ext.to** — 复用浏览器已通过 Cloudflare 校验的 `cf_clearance` Cookie
 
@@ -85,6 +86,38 @@ ext.to 由 Cloudflare 保护，机房 IP 会被拦截。本项目复用你本机
 | `tmdb_lang` | TMDB 语言，默认 `zh-CN`，返回中文标题与简介 |
 | `tmdb_only` | 只推送匹配到 TMDB 的种子，未匹配的计入「跳过」而不是失败 |
 | `poster_source` | 海报来源：`auto`（优先 TMDB，失败回退种子站）/ `tmdb` / `tracker` |
+| `category_rules` | 分类规则（YAML），按 TMDB 元数据归类。留空则不分类，下面的分类黑名单也不会有作用 |
+| `category_blacklist` | 分类黑名单，一行一个，填规则里的分类名 |
+| `genre_blacklist` | TMDB 类型名黑名单，例如 `真人秀`，忽略大小写 |
+| `genre_id_blacklist` | TMDB 类型编号黑名单，例如 `99`（纪录片）、`10764`（真人秀） |
+
+### 分类过滤
+
+种子站自己的分类太粗：`动漫` 一类里同时有国漫、日番和欧美动画，**单靠站点分类无法只留国漫**。所以本项目按 **TMDB 匹配结果的元数据** 分类，再用黑名单排除不要的分类。
+
+面板 **分类过滤** 页面可以编辑规则与三份黑名单，**恢复默认规则** 按钮会把内置规则填回输入框（记得再点 **保存设置**）。默认值就是「只推送国漫与国产剧」：规则会先判 `国漫`（动画 + 中国台港），再判 `国产剧`，黑名单排除 `欧美剧 / 日韩剧 / 综艺 / 纪录片 / 日番 / 未分类`。
+
+规则文件的写法：
+
+```yaml
+tv:
+  国漫:                      # 二级就是分类名，会出现在面板与 {category_tmdb}
+    genre_ids: '16'          # TMDB 类型编号，逗号分隔
+    origin_country: 'CN,TW,HK'
+  日番:
+    genre_ids: '16'
+    origin_country: 'JP'
+  未分类:                     # 没有任何条件的分类是兜底
+```
+
+可用字段：`genre_ids`、`original_language`、`origin_country`（剧集）、`production_countries`（电影）、`release_year`（支持 `2020-2025`）。同一分类内多个字段是「并且」，同一字段多个值用逗号分隔是「或者」，值前加 `!` 表示排除。**条件多的分类优先**，条件数相同时按书写顺序，所以 `国漫` 写在 `国产剧` 前面时，国产动画不会被误判成普通剧集。
+
+两点必须清楚：
+
+- **分类依赖 TMDB**，没有填 TMDB API Key 时规则不会生效。
+- **匹配不到 TMDB 的条目会被跳过**，因为它可能属于任何分类，无法确认就不推送；这类跳过与「命中黑名单」在日志里有不同措辞。
+
+转发记录页会显示每个条目的判定分类，跳过时也能看到它被归到了哪一类。
 
 ### TMDB 匹配
 
@@ -115,6 +148,7 @@ ext.to 由 Cloudflare 保护，机房 IP 会被拦截。本项目复用你本机
 | `{tmdb_year}` `{tmdb_rating}` `{tmdb_votes}` | 年份、评分、评分人数 |
 | `{tmdb_url}` `{tmdb_id}` `{tmdb_type}` | TMDB 链接、编号、类型（movie / tv） |
 | `{tmdb_overview}` | TMDB 简介，按 Telegram 限制截断为 320 字 |
+| `{category_tmdb}` | 分类规则判定的分类，如 `国漫`、`国产剧`；未命中时为「未分类」，无规则时回退为站点分类 |
 | `{category}` | 分类路径，如 `Movies - Highres Movies` |
 | `{size}` `{files}` | 体积、文件数 |
 | `{seeds}` `{leeches}` | 做种数、下载数 |
@@ -176,12 +210,28 @@ internal/config/     配置读写、校验、打码，以及推送模板渲染
 internal/media/      发布名解析：标题去噪、年份、季集、[剧集] / [电影] 前缀
 internal/scrape/     ext.to 抓取：列表解析、magnet 签名、海报提取
 internal/tmdb/       TMDB 匹配：IMDb 编号换条目、标题精确搜索
+internal/rules/      分类规则引擎：YAML 规则解析、元数据匹配、黑名单判定
 internal/telegram/   Bot API 最小实现（sendMessage / sendPhoto / getMe）
 internal/forwarder/  调度核心：过滤、去重、推送、运行报告
 internal/store/      转发历史持久化（JSON）
 internal/web/        HTTP 接口与内嵌管理面板
 deploy/              部署用 docker-compose.yml
+scripts/             版本号递增脚本
 ```
+
+## 版本号
+
+版本号的唯一来源是仓库根目录的 `VERSION`（`MAJOR.MINOR.PATCH`）。CI 读取它并同时用于三处，因此镜像标签、二进制内嵌版本与面板页脚永远一致：Docker 镜像标签（`1.2.3`、`1.2`、`latest`、`sha`）、`-ldflags -X main.version`、以及 `/api/health` 返回的版本。面板侧边栏页脚与 **面板设置 → 关于** 显示的就是这个值。
+
+改动后递增版本号：
+
+```bash
+./scripts/bump-version.sh patch   # 1.0.0 -> 1.0.1
+./scripts/bump-version.sh minor   # 1.0.1 -> 1.1.0
+./scripts/bump-version.sh major   # 1.1.0 -> 2.0.0
+```
+
+脚本只改 `VERSION`；工作区干净时它会一并提交并打 `vX.Y.Z` tag。推送 tag 会触发 CI 构建该版本的镜像。想看当前二进制版本可直接运行 `extto -version`。
 
 ## 技术要点
 

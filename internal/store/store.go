@@ -34,6 +34,12 @@ type Record struct {
 	TMDBYear    int     `json:"tmdb_year,omitempty"`
 	TMDBRating  float64 `json:"tmdb_rating,omitempty"`
 	TMDBMatched bool    `json:"tmdb_matched,omitempty"`
+	// RuleCategory is the name the classification rules gave the match, for
+	// example 国漫 or 国产剧. It is recorded because the tracker category is
+	// too coarse to check that a filter did what the operator intended: only
+	// this field shows whether a release was seen as Chinese animation or as
+	// another region's drama.
+	RuleCategory string `json:"rule_category,omitempty"`
 }
 
 // Stats summarises store contents for the web UI.
@@ -131,11 +137,12 @@ func (s *Store) Put(r Record) {
 // TMDBInfo describes a resolved TMDB match. It is a plain value so the store
 // stays free of any dependency on the TMDB client.
 type TMDBInfo struct {
-	ID     int
-	Type   string
-	Title  string
-	Year   int
-	Rating float64
+	ID       int
+	Type     string
+	Title    string
+	Year     int
+	Rating   float64
+	Category string
 }
 
 // MarkSent flags a record as forwarded.
@@ -171,6 +178,11 @@ func (s *Store) markSent(id int, magnet string, info *TMDBInfo) {
 		r.TMDBRating = info.Rating
 		r.TMDBMatched = true
 	}
+	// An empty category must not erase one already recorded, because the rule
+	// pass may have named it before the send was attempted.
+	if info != nil && info.Category != "" {
+		r.RuleCategory = info.Category
+	}
 	s.records[k] = r
 	s.dirty = true
 }
@@ -185,6 +197,25 @@ func (s *Store) MarkError(id int, msg string) {
 		r = Record{ID: id, FirstSeen: time.Now()}
 	}
 	r.Error = msg
+	s.records[k] = r
+	s.dirty = true
+}
+
+// MarkCategory records the rule category a torrent was classified into. It is
+// set for every release the rules could name, including the ones a blacklist
+// then dropped, so the history view can explain a skip.
+func (s *Store) MarkCategory(id int, category string) {
+	if category == "" {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	k := key(id)
+	r, ok := s.records[k]
+	if !ok {
+		r = Record{ID: id, FirstSeen: time.Now()}
+	}
+	r.RuleCategory = category
 	s.records[k] = r
 	s.dirty = true
 }

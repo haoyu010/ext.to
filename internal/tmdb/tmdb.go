@@ -59,6 +59,18 @@ type Entry struct {
 	VoteCount     int     `json:"vote_count"`
 	PosterPath    string  `json:"poster_path"`
 	Overview      string  `json:"overview"`
+	// Genres are TMDB genre ids, used by the classification rules.
+	Genres []string `json:"genres,omitempty"`
+	// GenreNames are the same genres in the configured language, for the
+	// name based blacklist. They are kept beside the ids because the ids are
+	// what the rules match on and the names are what an operator recognises.
+	GenreNames []string `json:"genre_names,omitempty"`
+	// OriginalLanguage drives the language based rules, for example "zh".
+	OriginalLanguage string `json:"original_language,omitempty"`
+	// OriginCountries is a TV show's origin_country.
+	OriginCountries []string `json:"origin_countries,omitempty"`
+	// ProductionCountries is a movie's production_countries.
+	ProductionCountries []string `json:"production_countries,omitempty"`
 	// MatchedBy records how the entry was found: "imdb" or "title".
 	MatchedBy string `json:"matched_by"`
 	// Confidence is 1.0 for an id match and below it for title matches.
@@ -339,17 +351,26 @@ func abs(n int) int {
 // fill loads full details for an id so title, year and rating are populated.
 func (c *Client) fill(ctx context.Context, id int, kind, matchedBy string, confidence float64) (Entry, bool) {
 	var raw struct {
-		ID            int     `json:"id"`
-		Title         string  `json:"title"`
-		Name          string  `json:"name"`
-		OriginalTitle string  `json:"original_title"`
-		OriginalName  string  `json:"original_name"`
-		ReleaseDate   string  `json:"release_date"`
-		FirstAirDate  string  `json:"first_air_date"`
-		VoteAverage   float64 `json:"vote_average"`
-		VoteCount     int     `json:"vote_count"`
-		PosterPath    string  `json:"poster_path"`
-		Overview      string  `json:"overview"`
+		ID            int      `json:"id"`
+		Title         string   `json:"title"`
+		Name          string   `json:"name"`
+		OriginalTitle string   `json:"original_title"`
+		OriginalName  string   `json:"original_name"`
+		ReleaseDate   string   `json:"release_date"`
+		FirstAirDate  string   `json:"first_air_date"`
+		VoteAverage   float64  `json:"vote_average"`
+		VoteCount     int      `json:"vote_count"`
+		PosterPath    string   `json:"poster_path"`
+		Overview      string   `json:"overview"`
+		OriginalLang  string   `json:"original_language"`
+		OriginCountry []string `json:"origin_country"`
+		Genres        []struct {
+			ID   int    `json:"id"`
+			Name string `json:"name"`
+		} `json:"genres"`
+		ProductionCountries []struct {
+			ISO string `json:"iso_3166_1"`
+		} `json:"production_countries"`
 	}
 	q := url.Values{"language": {c.Lang}}
 	if err := c.get(ctx, "/"+kind+"/"+strconv.Itoa(id), q, &raw); err != nil {
@@ -361,6 +382,20 @@ func (c *Client) fill(ctx context.Context, id int, kind, matchedBy string, confi
 		title = raw.Name
 		original = raw.OriginalName
 	}
+	genres := make([]string, 0, len(raw.Genres))
+	genreNames := make([]string, 0, len(raw.Genres))
+	for _, g := range raw.Genres {
+		genres = append(genres, strconv.Itoa(g.ID))
+		if g.Name != "" {
+			genreNames = append(genreNames, g.Name)
+		}
+	}
+	countries := make([]string, 0, len(raw.ProductionCountries))
+	for _, c := range raw.ProductionCountries {
+		if c.ISO != "" {
+			countries = append(countries, c.ISO)
+		}
+	}
 	return Entry{
 		ID:            raw.ID,
 		Type:          kind,
@@ -371,8 +406,15 @@ func (c *Client) fill(ctx context.Context, id int, kind, matchedBy string, confi
 		VoteCount:     raw.VoteCount,
 		PosterPath:    raw.PosterPath,
 		Overview:      raw.Overview,
-		MatchedBy:     matchedBy,
-		Confidence:    confidence,
+		Genres:        genres,
+		GenreNames:    genreNames,
+		// The upstream field is singular; keeping the plural name here matches
+		// the rule syntax, which accepts several values for one field.
+		OriginalLanguage:    raw.OriginalLang,
+		OriginCountries:     raw.OriginCountry,
+		ProductionCountries: countries,
+		MatchedBy:           matchedBy,
+		Confidence:          confidence,
 	}, true
 }
 

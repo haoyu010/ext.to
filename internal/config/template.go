@@ -23,7 +23,7 @@ const DefaultTemplate = `<b>{title}</b>
 const TMDBTemplate = `<b>{tmdb_title}</b> ({tmdb_year})
 ⭐ {tmdb_rating}/10 · {tmdb_votes} votes
 
-📁 {category}
+📁 {category_tmdb}
 💾 {size} · 📄 {files} files
 🌱 {seeds} seeders · {leeches} leechers
 🕐 {age}
@@ -44,6 +44,7 @@ var TemplateFields = []struct{ Key, Desc string }{
 	{"{tmdb_id}", "TMDB 数字编号"},
 	{"{tmdb_type}", "movie 或 tv"},
 	{"{tmdb_overview}", "TMDB 简介，会按 Telegram 限制截断"},
+	{"{category_tmdb}", "TMDB 分类规则命中的分类，例如 国漫、国产剧，未命中时为「未分类」"},
 	{"{category}", "分类路径，例如 Movies - Highres Movies"},
 	{"{size}", "可读体积，例如 1.43 GB"},
 	{"{files}", "种子内文件数"},
@@ -82,6 +83,10 @@ type TemplateData struct {
 	TMDBID            int
 	TMDBType          string
 	TMDBOverview      string
+	// RuleCategory is the name the classification rules produced from the TMDB
+	// match, such as 国漫. It is distinct from Category, which is the tracker's
+	// own path and says nothing about region or medium.
+	RuleCategory string
 }
 
 // Render substitutes placeholders in tpl. Values are HTML-escaped because
@@ -113,6 +118,13 @@ func Render(tpl string, d TemplateData) string {
 	if tmdbURL == "" {
 		tmdbURL = d.URL
 	}
+	// Like the TMDB title, the classified name degrades to the tracker's own
+	// category rather than rendering an empty value, so a template using it
+	// never leaves a dangling label.
+	ruleCategory := d.RuleCategory
+	if ruleCategory == "" {
+		ruleCategory = d.Category
+	}
 	rep := strings.NewReplacer(
 		"{title}", escape(d.Title),
 		"{tmdb_title}", escape(tmdbTitle),
@@ -124,6 +136,7 @@ func Render(tpl string, d TemplateData) string {
 		"{tmdb_id}", fmt.Sprint(d.TMDBID),
 		"{tmdb_type}", escape(d.TMDBType),
 		"{tmdb_overview}", escape(truncateRunes(d.TMDBOverview, 320)),
+		"{category_tmdb}", escape(ruleCategory),
 		"{category}", escape(d.Category),
 		"{size}", escape(d.Size),
 		"{files}", fmt.Sprint(d.Files),
