@@ -20,6 +20,11 @@ services:
       - ./data:/data
     environment:
       - TZ=Asia/Shanghai
+      # Ownership applied to ./data before the server starts. Set these to the
+      # uid:gid that own the folder on the host (run `id` over SSH to check;
+      # fnOS users are typically 1000:1000).
+      - PUID=1000
+      - PGID=1000
       # Change the listener or data directory here if needed.
       # - ADDR=:8080
       # - DATA_DIR=/data

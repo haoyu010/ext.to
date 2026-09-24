@@ -26,6 +26,8 @@ docker compose up -d
 
 打开 `http://<主机IP>:8090`，默认账号密码 **admin / admin**。
 
+如果容器启动后日志报 `permission denied` 写不了 `/data`，把 `docker-compose.yml` 里的 `PUID` / `PGID` 改成该目录在宿主机上的属主（SSH 里执行 `id` 查看，飞牛用户通常是 `1000:1000`）。
+
 ### 2. 配置 Telegram
 
 1. 在 Telegram 里找 [@BotFather](https://t.me/BotFather)，发送 `/newbot`，拿到 **Bot Token**（形如 `123456789:AAF-xxxxxxxx`）
