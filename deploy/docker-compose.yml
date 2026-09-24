@@ -1,0 +1,36 @@
+# Deployment for fnOS (飞牛) / any Docker host.
+#
+#   1. Copy docker-compose.yml to a folder, for example /vol1/1000/docker/extto
+#   2. docker compose up -d
+#   3. Open http://<host-ip>:8090 and sign in with admin / admin
+#   4. Fill in the Telegram and ext.to settings, then press Save
+
+services:
+  extto:
+    image: ghcr.io/haoyu010/ext.to:latest
+    container_name: ext-to-forwarder
+    restart: unless-stopped
+    ports:
+      # The dashboard is exposed unauthenticated-by-default, so it is bound to
+      # the LAN interface only. Remove the IP part to expose it on all
+      # interfaces.
+      - "8090:8080"
+    volumes:
+      # Holds config.json (settings) and state.json (delivery history).
+      - ./data:/data
+    environment:
+      - TZ=Asia/Shanghai
+      # Change the listener or data directory here if needed.
+      # - ADDR=:8080
+      # - DATA_DIR=/data
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/api/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

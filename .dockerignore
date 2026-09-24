@@ -1,0 +1,25 @@
+# Keep the build context minimal: only the module files and Go sources are
+# copied into the image, so everything else is excluded.
+.git
+.github
+.gitignore
+
+# Runtime state and secrets must never enter an image layer.
+data/
+smoke-data/
+config.json
+state.json
+cookie.json
+
+# Development scratch. Note: internal/web/assets/index.html is embedded into
+# the binary with go:embed, so it must stay in the build context.
+*.py
+*.png
+go-probe/
+probe/
+browser-profile/
+chrome-profile/
+
+# Docs and deployment manifests are not needed inside the image
+README.md
+deploy/
