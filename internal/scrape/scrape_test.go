@@ -1,6 +1,9 @@
 package scrape
 
 import (
+	"context"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"strings"
 	"testing"
@@ -136,6 +139,77 @@ func TestIDFromSlug(t *testing.T) {
 		got, ok := idFromSlug(tc.slug)
 		if ok != tc.ok || got != tc.id {
 			t.Errorf("idFromSlug(%q) = (%d, %v), want (%d, %v)", tc.slug, got, ok, tc.id, tc.ok)
+		}
+	}
+}
+
+// TestDownloadImageWithholdsCookiesFromThirdParties covers the poster hosts:
+// artwork usually lives on image.tmdb.org or static.tvmaze.com, and neither
+// should receive the Cloudflare clearance cookie that authenticates the user
+// to ext.to. Leaving it out also keeps the tracker's session out of a third
+// party's access logs.
+func TestDownloadImageWithholdsCookiesFromThirdParties(t *testing.T) {
+	png := []byte("\x89PNG\r\n\x1a\nfake")
+	var trackerCookie, thirdPartyCookie string
+
+	tracker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		trackerCookie = r.Header.Get("Cookie")
+		w.Write(png)
+	}))
+	defer tracker.Close()
+
+	thirdParty := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		thirdPartyCookie = r.Header.Get("Cookie")
+		w.Write(png)
+	}))
+	defer thirdParty.Close()
+
+	restore := BaseURL
+	BaseURL = tracker.URL
+	defer func() { BaseURL = restore }()
+
+	c := &Client{
+		HTTP:      http.DefaultClient,
+		Clearance: "cf-clearance-value",
+		Session:   "php-session-value",
+	}
+	ctx := context.Background()
+
+	if _, err := c.DownloadImage(ctx, thirdParty.URL+"/poster.jpg"); err != nil {
+		t.Fatalf("DownloadImage(third party): %v", err)
+	}
+	if thirdPartyCookie != "" {
+		t.Errorf("third party received cookies: %q, want none", thirdPartyCookie)
+	}
+
+	if _, err := c.DownloadImage(ctx, tracker.URL+"/upload_files/poster.jpg"); err != nil {
+		t.Fatalf("DownloadImage(tracker): %v", err)
+	}
+	for _, want := range []string{"cf_clearance=cf-clearance-value", "PHPSESSID=php-session-value"} {
+		if !strings.Contains(trackerCookie, want) {
+			t.Errorf("tracker cookie %q is missing %q", trackerCookie, want)
+		}
+	}
+}
+
+func TestIsTrackerHost(t *testing.T) {
+	restore := BaseURL
+	BaseURL = "https://ext.to"
+	defer func() { BaseURL = restore }()
+
+	cases := map[string]bool{
+		"https://ext.to/upload_files/a.jpg":              true,
+		"https://EXT.TO/upload_files/a.jpg":              true,
+		"https://www.ext.to/upload_files/a.jpg":          true,
+		"https://image.tmdb.org/t/p/w500/a.jpg":          false,
+		"https://static.tvmaze.com/uploads/a.jpg":        false,
+		"https://ext.to.evil.example/upload_files/a.jpg": false,
+		"https://notext.to/upload_files/a.jpg":           false,
+		"://not a url":                                   false,
+	}
+	for in, want := range cases {
+		if got := isTrackerHost(in); got != want {
+			t.Errorf("isTrackerHost(%q) = %v, want %v", in, got, want)
 		}
 	}
 }

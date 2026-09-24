@@ -91,6 +91,45 @@ func TestParseSeriesDetail(t *testing.T) {
 	}
 }
 
+// A series page whose scraped metadata block is missing entirely -- the
+// tracker publishes several of these -- has no label naming the media type.
+// The poster block is the remaining marker, and without it the release name
+// would be the only clue left.
+const bareSeriesDetail = `<!doctype html><html><body>
+<div class="poster-block">
+  <div class="serial_poster__border1" style="background-image:url(https://static.tvmaze.com/uploads/images/original_untouched/572/1432197.jpg);"></div>
+</div>
+<div class="row movie-info"><ul class="detail-page-info-list">
+  <li><strong>Torrent host:</strong> EXT</li>
+  <li><strong>IMDb link:</strong> <a rel="nofollow" href="https://www.imdb.com/title/tt27776045/">27776045</a></li>
+</ul>
+<img class="detail-torrent-image" src="/static/img/no-torrent-image.png"></div>
+</body></html>`
+
+func TestParseBareSeriesDetail(t *testing.T) {
+	d := ParseDetail([]byte(bareSeriesDetail))
+	if d.Kind != "tv" {
+		t.Errorf("Kind = %q, want tv from the poster block", d.Kind)
+	}
+	if d.IMDbID != "tt27776045" {
+		t.Errorf("IMDbID = %q, want tt27776045", d.IMDbID)
+	}
+	if d.PosterURL != "https://static.tvmaze.com/uploads/images/original_untouched/572/1432197.jpg" {
+		t.Errorf("PosterURL = %q, want the tvmaze artwork", d.PosterURL)
+	}
+}
+
+// The fallback must not turn a film page into a series: the bare fixture has
+// no "Movie:" row, so a film page keeps an empty kind and the forwarder falls
+// back to the release-name prefix.
+func TestParseInfoTitleWithoutSerialBlockStaysEmpty(t *testing.T) {
+	page := `<html><body><ul><li><strong>Torrent host:</strong> EXT</li></ul>` +
+		`<img class="detail-torrent-image" src="/static/img/no-torrent-image.png"></body></html>`
+	if _, kind := parseInfoTitle([]byte(page)); kind != "" {
+		t.Errorf("kind = %q, want empty when nothing identifies the media type", kind)
+	}
+}
+
 // A page whose only image is the shared placeholder must yield no poster, so
 // the forwarder posts text rather than the tracker's grey box.
 func TestParsePlaceholderPosterIsIgnored(t *testing.T) {

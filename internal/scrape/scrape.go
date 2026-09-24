@@ -293,6 +293,11 @@ func (c *Client) FetchPoster(ctx context.Context, item Item) (string, error) {
 }
 
 // DownloadImage fetches remote bytes, used to re-upload posters to Telegram.
+//
+// The URL usually points at a third party — image.tmdb.org, static.tvmaze.com,
+// or the tracker's own upload directory. The clearance and session cookies
+// authenticate the user to ext.to only, so they are withheld unless the image
+// is served from the tracker itself.
 func (c *Client) DownloadImage(ctx context.Context, rawURL string) ([]byte, error) {
 	if rawURL == "" {
 		return nil, errors.New("empty image url")
@@ -301,7 +306,11 @@ func (c *Client) DownloadImage(ctx context.Context, rawURL string) ([]byte, erro
 	if err != nil {
 		return nil, err
 	}
-	c.decorate(req)
+	if isTrackerHost(rawURL) {
+		c.decorate(req)
+	} else {
+		c.decorateAnonymous(req)
+	}
 	req.Header.Set("Referer", BaseURL+"/")
 	resp, err := c.HTTP.Do(req)
 	if err != nil {
@@ -354,6 +363,21 @@ func (c *Client) decorate(req *http.Request) {
 	}
 	req.Header.Set("User-Agent", ua)
 	req.Header.Set("Accept-Language", "en-US,en;q=0.9")
+	c.setCookies(req)
+}
+
+// decorateAnonymous sets the headers a request needs to look like a normal
+// browser without attaching the ext.to credentials.
+func (c *Client) decorateAnonymous(req *http.Request) {
+	ua := c.UserAgent
+	if ua == "" {
+		ua = config.DefaultUserAgent
+	}
+	req.Header.Set("User-Agent", ua)
+	req.Header.Set("Accept-Language", "en-US,en;q=0.9")
+}
+
+func (c *Client) setCookies(req *http.Request) {
 	var ck []string
 	if c.Clearance != "" {
 		ck = append(ck, "cf_clearance="+c.Clearance)
@@ -364,6 +388,26 @@ func (c *Client) decorate(req *http.Request) {
 	if len(ck) > 0 {
 		req.Header.Set("Cookie", strings.Join(ck, "; "))
 	}
+}
+
+// isTrackerHost reports whether a URL is served by the tracker itself, which
+// is the only origin that should receive the ext.to session cookies. A
+// subdomain such as www.ext.to counts; a lookalike such as ext.to.example does
+// not, because the suffix test is anchored on a dot.
+func isTrackerHost(rawURL string) bool {
+	target, err := url.Parse(rawURL)
+	if err != nil {
+		return false
+	}
+	origin, err := url.Parse(BaseURL)
+	if err != nil {
+		return false
+	}
+	th, oh := strings.ToLower(target.Host), strings.ToLower(origin.Host)
+	if th == "" || oh == "" {
+		return false
+	}
+	return th == oh || strings.HasSuffix(th, "."+oh)
 }
 
 var challengeMarkers = [][]byte{
@@ -489,8 +533,12 @@ var (
 	// Series pages carry the artwork as a TMDB background image instead; the
 	// detail-torrent-image element is a placeholder on those pages.
 	reSerialPoster = regexp.MustCompile(`serial_poster__border1"[^>]*background-image:url\(([^)]+)\)`)
-	reThumb        = regexp.MustCompile(`/resize_cache/`)
-	reDimDir       = regexp.MustCompile(`/\d+_\d+_\d+/`)
+	// The poster block is the only marker every series page has, whatever
+	// metadata the tracker managed to scrape, so it also backs up the media
+	// type when the info list carries no label that names it.
+	reSerialBlock = regexp.MustCompile(`serial_poster__border1`)
+	reThumb       = regexp.MustCompile(`/resize_cache/`)
+	reDimDir      = regexp.MustCompile(`/\d+_\d+_\d+/`)
 )
 
 func parseTokens(body []byte) (token, csrf string) {
@@ -592,21 +640,32 @@ func parseIMDbID(body []byte) string {
 }
 
 // parseInfoTitle returns the canonical title and media kind from the detail
-// page's info list, for example "Movie: Ring Ring" or "TV Show: ...".
+// page's info list, for example "Movie: Ring Ring".
+//
+// The film layout is signalled by a "Movie:" row. The series layout has no
+// equivalent row and varies by how much metadata the tracker scraped: some
+// pages carry an "Original name:" row, others only "Type" or "Networks", and
+// a few have no metadata block at all. The serial poster block is the one
+// marker every series page has and no film page has, so it backs up the
+// labels. When nothing identifies the media type the kind stays empty and the
+// caller falls back to inferring it from the release name.
 func parseInfoTitle(body []byte) (title, kind string) {
 	forEachInfoItem(body, func(label string, li, strong *html.Node) {
 		k, ok := infoTitleLabels[label]
 		if !ok || title != "" {
 			return
 		}
-		// Drop the leading "Movie:" label. Splitting on the first colon would
-		// break titles that legitimately contain one, such as
-		// "Glass Onion: A Knives Out Mystery".
+		// Drop the leading label, for example "Movie:". Splitting on the
+		// first colon would break titles that legitimately contain one, such
+		// as "Glass Onion: A Knives Out Mystery".
 		full := strings.TrimSpace(textOf(li))
 		labelText := strings.TrimSpace(textOf(strong))
 		title = strings.TrimSpace(strings.TrimPrefix(full, labelText))
 		kind = k
 	})
+	if kind == "" && reSerialBlock.Match(body) {
+		kind = "tv"
+	}
 	return title, kind
 }
 
