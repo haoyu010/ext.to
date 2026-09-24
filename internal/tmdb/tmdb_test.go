@@ -76,7 +76,7 @@ func TestResolveByIMDbID(t *testing.T) {
 	srv := fixtureServer(t)
 	c := newTestClient(t, srv)
 
-	e, err := c.Resolve(context.Background(), "tt1375666", "Inception.2010.1080p.BluRay")
+	e, err := c.Resolve(context.Background(), "tt1375666", "Inception.2010.1080p.BluRay", "")
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
@@ -103,7 +103,7 @@ func TestResolveIDIgnoresTitleMismatch(t *testing.T) {
 	srv := fixtureServer(t)
 	c := newTestClient(t, srv)
 
-	e, err := c.Resolve(context.Background(), "tt1375666", "Completely Unrelated Name 1999")
+	e, err := c.Resolve(context.Background(), "tt1375666", "Completely Unrelated Name 1999", "")
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
@@ -116,7 +116,7 @@ func TestResolveByTitleTV(t *testing.T) {
 	srv := fixtureServer(t)
 	c := newTestClient(t, srv)
 
-	e, err := c.Resolve(context.Background(), "", "The.Long.Watch.S01E05-E07.2026.2160p.WEB-DL.H265.DV.DDP5.1-BlackTV")
+	e, err := c.Resolve(context.Background(), "", "The.Long.Watch.S01E05-E07.2026.2160p.WEB-DL.H265.DV.DDP5.1-BlackTV", "")
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
@@ -136,7 +136,7 @@ func TestResolveTitleRequiresExactMatch(t *testing.T) {
 	srv := fixtureServer(t)
 	c := newTestClient(t, srv)
 
-	_, err := c.Resolve(context.Background(), "", "Ring.Ring.2019.1080p.WEBRip")
+	_, err := c.Resolve(context.Background(), "", "Ring.Ring.2019.1080p.WEBRip", "")
 	if !errors.Is(err, ErrNoMatch) {
 		t.Fatalf("err = %v, want ErrNoMatch", err)
 	}
@@ -144,7 +144,7 @@ func TestResolveTitleRequiresExactMatch(t *testing.T) {
 
 func TestResolveWithoutKey(t *testing.T) {
 	c := New("", "zh-CN")
-	_, err := c.Resolve(context.Background(), "tt1375666", "Inception.2010")
+	_, err := c.Resolve(context.Background(), "tt1375666", "Inception.2010", "")
 	if !errors.Is(err, ErrNotConfigured) {
 		t.Fatalf("err = %v, want ErrNotConfigured", err)
 	}
@@ -187,7 +187,7 @@ func TestUnauthorizedKeyIsReported(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClient(t, srv)
-	_, err := c.Resolve(context.Background(), "tt1", "Inception.2010")
+	_, err := c.Resolve(context.Background(), "tt1", "Inception.2010", "")
 	if err == nil || !strings.Contains(err.Error(), "401") {
 		t.Fatalf("err = %v, want a 401 message", err)
 	}

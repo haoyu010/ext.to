@@ -106,12 +106,18 @@ func New(apiKey, lang string) *Client {
 // Configured reports whether an API key is present.
 func (c *Client) Configured() bool { return c != nil && c.APIKey != "" }
 
-// Resolve maps a release name and an optional IMDb id to a TMDB entry.
+// Resolve maps a release to a TMDB entry.
 //
 // The IMDb id is authoritative: when present it is tried first and its result
-// is accepted without a title comparison. A title search is only attempted
-// when no id is available, and it must agree on both title and type.
-func (c *Client) Resolve(ctx context.Context, imdbID, releaseName string) (Entry, error) {
+// is accepted without a title comparison.
+//
+// Without an id, the release name supplies the structural facts (year, season,
+// kind) and each candidate title is searched in turn. canonicalTitle comes
+// from the detail page and is tried first, because for a film it is the clean
+// title with the release noise already stripped. It is not trusted blindly:
+// series pages report the work's original name, which is frequently in another
+// script, so the release-derived title remains as a fallback.
+func (c *Client) Resolve(ctx context.Context, imdbID, releaseName, canonicalTitle string) (Entry, error) {
 	if !c.Configured() {
 		return Entry{}, ErrNotConfigured
 	}
@@ -124,10 +130,42 @@ func (c *Client) Resolve(ctx context.Context, imdbID, releaseName string) (Entry
 			return Entry{}, err
 		}
 	}
-	if parsed.Title == "" {
-		return Entry{}, ErrNoMatch
+
+	var lastErr error = ErrNoMatch
+	for _, title := range candidateTitles(canonicalTitle, parsed.Title) {
+		e, err := c.byTitle(ctx, title, parsed)
+		if err == nil {
+			return e, nil
+		}
+		// A transport or key problem will not be fixed by another title, so
+		// it is reported immediately rather than masked by the next attempt.
+		if !errors.Is(err, ErrNoMatch) {
+			return Entry{}, err
+		}
+		lastErr = err
 	}
-	return c.byTitle(ctx, parsed)
+	return Entry{}, lastErr
+}
+
+// candidateTitles returns the titles to search, in order, skipping blanks and
+// duplicates. Comparison folds case and punctuation so a canonical title that
+// only differs cosmetically does not trigger a second request.
+func candidateTitles(canonical, fromRelease string) []string {
+	var out []string
+	seen := map[string]bool{}
+	for _, t := range []string{canonical, fromRelease} {
+		t = strings.TrimSpace(t)
+		if t == "" {
+			continue
+		}
+		key := media.Normalize(t)
+		if key == "" || seen[key] {
+			continue
+		}
+		seen[key] = true
+		out = append(out, t)
+	}
+	return out
 }
 
 // byIMDb resolves an IMDb id through the /find endpoint.
@@ -185,7 +223,15 @@ type findResult struct {
 }
 
 // byTitle searches TMDB by title and accepts only a normalised exact match.
-func (c *Client) byTitle(ctx context.Context, parsed media.Result) (Entry, error) {
+// The year and kind come from parsed, which is derived from the release name,
+// so a canonical title that differs does not change the search constraints.
+//
+// The year is deliberately not sent as a query parameter. TMDB's year filters
+// are exact, and a torrent's year is not reliably the same field: for a series
+// it is the air year of that episode, which is usually later than the show's
+// first air date. Filtering server-side would discard valid results, so the
+// year is applied here instead, and only loosely.
+func (c *Client) byTitle(ctx context.Context, title string, parsed media.Result) (Entry, error) {
 	kinds := []string{"movie", "tv"}
 	switch parsed.Kind {
 	case media.KindMovie:
@@ -194,8 +240,10 @@ func (c *Client) byTitle(ctx context.Context, parsed media.Result) (Entry, error
 		kinds = []string{"tv"}
 	}
 
-	want := media.Normalize(parsed.Title)
+	want := media.Normalize(title)
 	var best Entry
+	var bestDelta int
+	var bestScore float64
 	for _, kind := range kinds {
 		var out struct {
 			Results []struct {
@@ -208,14 +256,7 @@ func (c *Client) byTitle(ctx context.Context, parsed media.Result) (Entry, error
 				FirstAirDate string `json:"first_air_date"`
 			} `json:"results"`
 		}
-		q := url.Values{"query": {parsed.Title}, "language": {c.Lang}}
-		if parsed.Year != 0 {
-			if kind == "movie" {
-				q.Set("year", strconv.Itoa(parsed.Year))
-			} else {
-				q.Set("first_air_date_year", strconv.Itoa(parsed.Year))
-			}
-		}
+		q := url.Values{"query": {title}, "language": {c.Lang}}
 		if err := c.get(ctx, "/search/"+kind, q, &out); err != nil {
 			return Entry{}, err
 		}
@@ -227,17 +268,31 @@ func (c *Client) byTitle(ctx context.Context, parsed media.Result) (Entry, error
 			if media.Normalize(name) != want {
 				continue
 			}
-			// A year in the release name must agree with the entry, when
-			// both sides actually carry one.
-			if y := yearFrom(r.ReleaseDate, r.FirstAirDate); parsed.Year != 0 && y != 0 && y != parsed.Year {
+			y := yearFrom(r.ReleaseDate, r.FirstAirDate)
+			if !yearCompatible(kind, parsed.Year, y) {
 				continue
 			}
 			e, ok := c.fill(ctx, r.ID, kind, "title", 0.9)
 			if !ok {
 				continue
 			}
-			if best.ID == 0 || e.Rating > best.Rating {
+			// Prefer the candidate whose year is closest to the release,
+			// which is what disambiguates a remake. Without a release year,
+			// fall back to the better-known entry.
+			delta := abs(e.Year - parsed.Year)
+			switch {
+			case best.ID == 0:
 				best = e
+				bestDelta, bestScore = delta, e.Rating
+			case parsed.Year != 0 && delta < bestDelta:
+				best = e
+				bestDelta, bestScore = delta, e.Rating
+			case parsed.Year != 0 && delta == bestDelta && e.Rating > bestScore:
+				best = e
+				bestScore = e.Rating
+			case parsed.Year == 0 && e.Rating > bestScore:
+				best = e
+				bestScore = e.Rating
 			}
 		}
 		if best.ID != 0 {
@@ -245,6 +300,31 @@ func (c *Client) byTitle(ctx context.Context, parsed media.Result) (Entry, error
 		}
 	}
 	return Entry{}, ErrNoMatch
+}
+
+// yearCompatible reports whether an entry's year can plausibly be the work the
+// release name refers to.
+//
+// Films are matched within a year, to absorb the difference between a festival
+// premiere and a wide release. A series needs a looser rule: its year in a
+// torrent name is the air year of that episode, so the entry merely has to
+// have started no later than the release.
+func yearCompatible(kind string, releaseYear, entryYear int) bool {
+	if releaseYear == 0 || entryYear == 0 {
+		return true
+	}
+	if kind == "tv" {
+		return entryYear <= releaseYear+1
+	}
+	delta := releaseYear - entryYear
+	return delta >= -1 && delta <= 1
+}
+
+func abs(n int) int {
+	if n < 0 {
+		return -n
+	}
+	return n
 }
 
 // fill loads full details for an id so title, year and rating are populated.

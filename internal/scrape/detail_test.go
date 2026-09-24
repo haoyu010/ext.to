@@ -3,6 +3,7 @@ package scrape
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -54,6 +55,80 @@ func TestParseDetailTitleAbsent(t *testing.T) {
 
 // The live fixtures are large captures kept outside the repository. When
 // SCRAPE_FIXTURE_DIR points at them, the parsers run against real markup.
+// seriesDetail mirrors the shape of a real ext.to series page: no "Movie:"
+// row, a placeholder in detail-torrent-image, and the artwork supplied as a
+// TMDB background image.
+const seriesDetail = `<!doctype html><html><body>
+<div class="col-lg-2 col-md-12 post-wrapper">
+  <div class="poster-block">
+    <div class="serial_poster__border1" style="background-image:url(https://image.tmdb.org/t/p/w300_and_h450_bestv2/orV0.jpg);"></div>
+    <div class="serial_poster__border2" style="background-image:url(https://image.tmdb.org/t/p/w300_and_h450_bestv2/orV0.jpg);"></div>
+  </div>
+</div>
+<div class="col-md-12"><div class="row movie-info"><div class="col-md-6">
+<ul class="detail-page-info-list">
+  <li><strong>Original name:</strong> 透明な夜に駆ける君と、目に見えない恋をした。</li>
+  <li><strong>Type:</strong> Scripted</li>
+  <li><strong>IMDb link:</strong> <a rel="nofollow" href="https://www.imdb.com/title/tt39304754/">39304754</a></li>
+  <li><strong>IMDb rating:</strong> 8.7 (2,365 votes)</li>
+</ul>
+<img class="detail-torrent-image" src="/static/img/no-torrent-image.png" title="Some Series S01 - E12">
+</div></div></div>
+</body></html>`
+
+// A series page must be identified as tv and must not fall back to the
+// shared placeholder image.
+func TestParseSeriesDetail(t *testing.T) {
+	d := ParseDetail([]byte(seriesDetail))
+	if d.Kind != "tv" {
+		t.Errorf("Kind = %q, want tv", d.Kind)
+	}
+	if d.IMDbID != "tt39304754" {
+		t.Errorf("IMDbID = %q, want tt39304754", d.IMDbID)
+	}
+	if d.PosterURL != "https://image.tmdb.org/t/p/w300_and_h450_bestv2/orV0.jpg" {
+		t.Errorf("PosterURL = %q, want the tmdb background image", d.PosterURL)
+	}
+}
+
+// A page whose only image is the shared placeholder must yield no poster, so
+// the forwarder posts text rather than the tracker's grey box.
+func TestParsePlaceholderPosterIsIgnored(t *testing.T) {
+	page := `<html><body><div class="movie-info"><ul class="detail-page-info-list">` +
+		`<li><strong>Movie:</strong> <a href="/x/"><span>Some Film</span></a></li>` +
+		`</ul><img class="detail-torrent-image" src="/static/img/no-torrent-image.png"></div></body></html>`
+	d := ParseDetail([]byte(page))
+	if d.PosterURL != "" {
+		t.Errorf("PosterURL = %q, want empty for a placeholder", d.PosterURL)
+	}
+	if d.Kind != "movie" {
+		t.Errorf("Kind = %q, want movie", d.Kind)
+	}
+}
+
+func TestIsPlaceholderImage(t *testing.T) {
+	placeholder := []string{
+		"https://ext.to/static/img/no-torrent-image.png",
+		"/static/img/no-image.png",
+		"/static/img/placeholder.jpg",
+	}
+	for _, u := range placeholder {
+		if !isPlaceholderImage(u) {
+			t.Errorf("isPlaceholderImage(%q) = false, want true", u)
+		}
+	}
+	real := []string{
+		"https://ext.to/upload_files/torrents-imdb-posters/0da/x.jpg",
+		"https://image.tmdb.org/t/p/w500/abc.jpg",
+		"/static/img/source/eztv.png",
+	}
+	for _, u := range real {
+		if isPlaceholderImage(u) {
+			t.Errorf("isPlaceholderImage(%q) = true, want false", u)
+		}
+	}
+}
+
 func TestParseLiveDetailFixtures(t *testing.T) {
 	dir := os.Getenv("SCRAPE_FIXTURE_DIR")
 	if dir == "" {
@@ -82,5 +157,32 @@ func TestParseLiveDetailFixtures(t *testing.T) {
 		if kind != want.kind {
 			t.Errorf("%s: kind = %q, want %q", name, kind, want.kind)
 		}
+	}
+}
+
+// The captured series page confirms both differences at once: the media type
+// comes from the scraped metadata block, and the artwork is a TMDB URL rather
+// than the placeholder sitting in detail-torrent-image.
+func TestParseLiveSeriesFixture(t *testing.T) {
+	dir := os.Getenv("SCRAPE_FIXTURE_DIR")
+	if dir == "" {
+		t.Skip("set SCRAPE_FIXTURE_DIR to run against captured pages")
+	}
+	body, err := os.ReadFile(filepath.Join(dir, "detail_tv.html"))
+	if err != nil {
+		t.Skipf("no series capture available: %v", err)
+	}
+	d := ParseDetail(body)
+	if d.Kind != "tv" {
+		t.Errorf("kind = %q, want tv", d.Kind)
+	}
+	if d.IMDbID != "tt39304754" {
+		t.Errorf("imdb = %q, want tt39304754", d.IMDbID)
+	}
+	if !strings.HasPrefix(d.PosterURL, "https://image.tmdb.org/t/p/") {
+		t.Errorf("poster = %q, want a tmdb image", d.PosterURL)
+	}
+	if isPlaceholderImage(d.PosterURL) {
+		t.Errorf("poster resolved to a placeholder: %q", d.PosterURL)
 	}
 }

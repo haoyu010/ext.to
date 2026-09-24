@@ -190,6 +190,16 @@ deploy/              部署用 docker-compose.yml
 绑定到具体的一次页面加载。转发器因此一次性取回页面，再从同一份 body 里分别解析三项数据，避免重复请求，
 也保证 token 与正在推送的种子严格对应。
 
+**电影页与剧集页结构不同。** 电影页用 `Movie:` 行给出正式片名，海报放在 `detail-torrent-image`；
+剧集页没有对应行，而是以元数据块首行的 `Original name:` 标识，且 `detail-torrent-image` 指向
+`/static/img/no-torrent-image.png` 占位图 —— 真正的海报在 `serial_poster` 块里，是 TMDB 的图片地址。
+解析器按「无 `Movie:` 且有 `Original name:`」判定为剧集，并主动跳过占位图，否则会把种子站的灰底占位图
+当海报发出去。
+
+**剧集年份不可直接用作筛选条件。** 种子名里的年份是该集的播出年份，通常晚于剧集首播年份；
+TMDB 的 `year` / `first_air_date_year` 参数是精确匹配，用它查询会把正确结果过滤掉。因此标题搜索不带年份，
+改由本地按媒体类型分别判断：电影允许 ±1 年误差（电影节首映与公映常跨年），剧集只要求首播年份不晚于种子年份。
+
 ## 常见问题
 
 **日志里出现 `cloudflare challenge returned`**
@@ -203,6 +213,10 @@ Cookie 失效了：可能过期、出口 IP 变了，或 User-Agent 与获取 Co
 
 **频道里的标题是其他语言**
 `tmdb_lang` 决定返回哪种语言的标题与简介，默认 `zh-CN`。改成 `en-US` 可拿到英文原名，`{tmdb_original_title}` 则始终是原始语言标题。
+
+**剧集匹配不到，或匹配成了别的剧**
+剧集页的 `Original name` 往往是日文、韩文原名，TMDB 不一定收录。转发器会先按正式名搜索，再退回种子名里的英文标题，
+两轮都失败才判定未匹配。若仍匹配错，多半是重名剧集，可用 `tmdb_lang` 调整后再到 **标题解析测试** 复核。
 
 **推送太频繁或太少**
 调大 `interval_seconds` 降低频率；想收窄内容则用 `include` / `exclude` 或体积范围。`batch_size` 只限制单次扫描上限，不改变实际抓到的新帖数量。

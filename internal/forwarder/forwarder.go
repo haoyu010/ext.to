@@ -325,14 +325,11 @@ func (f *Forwarder) matchTMDB(ctx context.Context, movies *tmdb.Client, settings
 	if !movies.Configured() {
 		return tmdb.Entry{}, false
 	}
-	// The tracked title is the release name, which carries codec noise. The
-	// detail page's canonical title is a much stronger basis for a search, so
-	// pass it as the name when available and keep the release name otherwise.
-	name := detail.Title
-	if name == "" {
-		name = it.Title
-	}
-	entry, err := movies.Resolve(ctx, detail.IMDbID, name)
+	// The release name supplies the year, season and kind; the detail page's
+	// canonical title is offered as the preferred search term. Resolve tries
+	// both, since a series page reports the original name rather than the
+	// English one.
+	entry, err := movies.Resolve(ctx, detail.IMDbID, it.Title, detail.Title)
 	if err != nil {
 		if !errors.Is(err, tmdb.ErrNoMatch) && !errors.Is(err, tmdb.ErrNotConfigured) {
 			f.log.Printf("forwarder: tmdb lookup failed for %d: %v", it.ID, err)
@@ -518,7 +515,7 @@ func (f *Forwarder) TestTMDB(ctx context.Context, key, lang string) (string, err
 		return "", tmdb.ErrNotConfigured
 	}
 	// A well-known title exercises both the key and the language setting.
-	entry, err := client.Resolve(ctx, "tt1375666", "Inception.2010.1080p.BluRay")
+	entry, err := client.Resolve(ctx, "tt1375666", "Inception.2010.1080p.BluRay", "")
 	if err != nil {
 		return "", err
 	}
@@ -534,7 +531,7 @@ func (f *Forwarder) LookupTMDB(ctx context.Context, imdbID, title string) (media
 	if !client.Configured() {
 		return media.Parse(title), tmdb.Entry{}, tmdb.ErrNotConfigured
 	}
-	entry, err := client.Resolve(ctx, imdbID, title)
+	entry, err := client.Resolve(ctx, imdbID, title, "")
 	if err != nil {
 		return media.Parse(title), tmdb.Entry{}, err
 	}

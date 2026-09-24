@@ -241,11 +241,15 @@ type Detail struct {
 
 // Info page labels that state the canonical title and media type.
 var infoTitleLabels = map[string]string{
-	"movie":     "movie",
-	"tv show":   "tv",
-	"tv":        "tv",
-	"series":    "tv",
-	"tv series": "tv",
+	"movie": "movie",
+	// A series page has no "TV Show:" row. It carries a scraped metadata
+	// block whose first field is "Original name:", which a film page never
+	// has, so that label is what identifies the media type.
+	"original name": "tv",
+	"tv show":       "tv",
+	"tv":            "tv",
+	"series":        "tv",
+	"tv series":     "tv",
 }
 
 // FetchDetailPage reads a torrent's detail page and returns the raw body.
@@ -482,8 +486,11 @@ var (
 	reCSRF   = regexp.MustCompile(`name="csrf-token"\s+content="([^"]+)"`)
 	reSlugID = regexp.MustCompile(`-(\d{6,})$`)
 	rePoster = regexp.MustCompile(`class="[^"]*detail-torrent-image[^"]*"[^>]*src="([^"]+)"`)
-	reThumb  = regexp.MustCompile(`/resize_cache/`)
-	reDimDir = regexp.MustCompile(`/\d+_\d+_\d+/`)
+	// Series pages carry the artwork as a TMDB background image instead; the
+	// detail-torrent-image element is a placeholder on those pages.
+	reSerialPoster = regexp.MustCompile(`serial_poster__border1"[^>]*background-image:url\(([^)]+)\)`)
+	reThumb        = regexp.MustCompile(`/resize_cache/`)
+	reDimDir       = regexp.MustCompile(`/\d+_\d+_\d+/`)
 )
 
 func parseTokens(body []byte) (token, csrf string) {
@@ -498,11 +505,26 @@ func parseTokens(body []byte) (token, csrf string) {
 
 // parsePosterURL prefers the original poster over the resized thumbnail.
 func parsePosterURL(body []byte) string {
-	m := rePoster.FindSubmatch(body)
-	if m == nil {
+	if m := rePoster.FindSubmatch(body); m != nil {
+		if p := normalisePoster(string(m[1])); p != "" && !isPlaceholderImage(p) {
+			return p
+		}
+	}
+	if m := reSerialPoster.FindSubmatch(body); m != nil {
+		if p := normalisePoster(string(m[1])); p != "" && !isPlaceholderImage(p) {
+			return p
+		}
+	}
+	return ""
+}
+
+// normalisePoster makes a poster path absolute and upgrades a generated
+// thumbnail to the original asset when the tracker hosts it locally.
+func normalisePoster(p string) string {
+	p = strings.TrimSpace(p)
+	if p == "" {
 		return ""
 	}
-	p := string(m[1])
 	if !strings.HasPrefix(p, "http") {
 		p = BaseURL + p
 	}
@@ -517,6 +539,23 @@ func parsePosterURL(body []byte) string {
 	alt = strings.ReplaceAll(alt, "//", "/")
 	alt = strings.Replace(alt, "\x00", "://", 1)
 	return alt
+}
+
+// isPlaceholderImage reports whether a URL points at a generic site asset
+// rather than artwork belonging to this torrent. Series pages leave the
+// detail-torrent-image element on a shared placeholder, and uploading that
+// would post the tracker's grey box as the film's poster.
+func isPlaceholderImage(url string) bool {
+	lower := strings.ToLower(url)
+	if !strings.Contains(lower, "/static/img/") {
+		return false
+	}
+	for _, name := range []string{"no-torrent-image", "no-image", "placeholder", "default"} {
+		if strings.Contains(lower, name) {
+			return true
+		}
+	}
+	return false
 }
 
 func idFromSlug(slug string) (int, bool) {
