@@ -74,7 +74,7 @@ func (f *Forwarder) Start() {
 	f.cancel = cancel
 	f.done = make(chan struct{})
 	go f.loop(ctx, f.done)
-	f.log.Printf("forwarder: started, interval=%s", f.cfg.Get().Duration())
+	f.log.Printf("监听已启动，间隔 %s", f.cfg.Get().Duration())
 }
 
 // Stop halts the polling loop and waits for the current cycle to finish.
@@ -88,7 +88,7 @@ func (f *Forwarder) Stop() {
 	}
 	cancel()
 	<-done
-	f.log.Printf("forwarder: stopped")
+	f.log.Printf("监听已停止")
 }
 
 // Running reports whether the polling loop is active.
@@ -132,16 +132,16 @@ func (f *Forwarder) cycle(ctx context.Context) {
 		f.lastRunMu.Unlock()
 		f.state.TouchLastRun()
 		if err := f.state.Flush(); err != nil {
-			f.log.Printf("forwarder: flush state: %v", err)
+			f.log.Printf("保存记录失败：%v", err)
 		}
-		f.log.Printf("forwarder: cycle done found=%d new=%d sent=%d skipped=%d failed=%d baseline=%v",
+		f.log.Printf("本轮扫描结束：抓取 %d，新增匹配 %d，已推送 %d，跳过 %d，失败 %d，基线 %v",
 			rep.Found, rep.New, rep.Sent, rep.Skipped, rep.Failed, rep.Baseline)
 	}()
 
 	if err := f.run(ctx, &rep); err != nil {
 		rep.Errors = append(rep.Errors, err.Error())
 		f.state.SetLastError(err.Error())
-		f.log.Printf("forwarder: cycle error: %v", err)
+		f.log.Printf("本轮扫描出错：%v", err)
 		return
 	}
 	f.state.SetLastError("")
@@ -187,8 +187,7 @@ func (f *Forwarder) run(ctx context.Context, rep *RunReport) error {
 		rep.Baseline = true
 		rep.New = 0
 		rep.Skipped = len(items)
-		f.log.Printf("forwarder: baseline established with %d existing torrents; "+
-			"new posts will be forwarded from the next cycle", len(items))
+		f.log.Printf("已建立基线：记录现有 %d 条种子，从下一轮开始推送新发布", len(items))
 		return nil
 	}
 
@@ -235,13 +234,13 @@ func (f *Forwarder) run(ctx context.Context, rep *RunReport) error {
 			if errors.Is(err, errNoMatch) {
 				// Filtered out on purpose; neither sent nor a failure.
 				rep.Skipped++
-				f.log.Printf("forwarder: skipped %d (%s): no tmdb match", it.ID, it.Title)
+				f.log.Printf("跳过 %d（%s）：没有匹配到 TMDB 条目", it.ID, it.Title)
 				continue
 			}
 			rep.Failed++
 			rep.Errors = append(rep.Errors, fmt.Sprintf("%d: %v", it.ID, err))
 			f.state.MarkError(it.ID, err.Error())
-			f.log.Printf("forwarder: failed to forward %d (%s): %v", it.ID, it.Title, err)
+			f.log.Printf("推送失败 %d（%s）：%v", it.ID, it.Title, err)
 			if telegram.IsBlocked(err) {
 				// Nothing will succeed; stop the cycle early.
 				return fmt.Errorf("telegram rejected the chat: %w", err)
@@ -267,7 +266,7 @@ func (f *Forwarder) publish(ctx context.Context, client *scrape.Client, tg *tele
 		page, err = client.FetchDetailPage(ctx, it)
 		if err != nil {
 			// Losing the detail page degrades the post rather than failing it.
-			f.log.Printf("forwarder: detail page unavailable for %d: %v", it.ID, err)
+			f.log.Printf("%d 的详情页不可用：%v", it.ID, err)
 			page = nil
 		} else {
 			detail = scrape.ParseDetail(page)
@@ -286,7 +285,7 @@ func (f *Forwarder) publish(ctx context.Context, client *scrape.Client, tg *tele
 		m, err := client.MagnetFromDetail(ctx, it, page)
 		if err != nil {
 			// A missing magnet should not block the post.
-			f.log.Printf("forwarder: magnet unavailable for %d: %v", it.ID, err)
+			f.log.Printf("%d 的磁力链接不可用：%v", it.ID, err)
 		} else {
 			magnet = m
 		}
@@ -332,11 +331,11 @@ func (f *Forwarder) matchTMDB(ctx context.Context, movies *tmdb.Client, settings
 	entry, err := movies.Resolve(ctx, detail.IMDbID, it.Title, detail.Title)
 	if err != nil {
 		if !errors.Is(err, tmdb.ErrNoMatch) && !errors.Is(err, tmdb.ErrNotConfigured) {
-			f.log.Printf("forwarder: tmdb lookup failed for %d: %v", it.ID, err)
+			f.log.Printf("%d 的 TMDB 查询失败：%v", it.ID, err)
 		}
 		return tmdb.Entry{}, false
 	}
-	f.log.Printf("forwarder: tmdb match for %d -> %s (%s %d) via %s",
+	f.log.Printf("%d 匹配到 TMDB：%s（%s %d），匹配方式 %s",
 		it.ID, entry.Title, entry.Type, entry.Year, entry.MatchedBy)
 	return entry, true
 }
@@ -356,7 +355,7 @@ func (f *Forwarder) loadPoster(ctx context.Context, client *scrape.Client, setti
 			if b, err := client.DownloadImage(ctx, url); err == nil {
 				return b
 			} else {
-				f.log.Printf("forwarder: tmdb poster download failed for %d: %v", it.ID, err)
+				f.log.Printf("%d 的 TMDB 海报下载失败：%v", it.ID, err)
 			}
 		}
 	}
@@ -367,7 +366,7 @@ func (f *Forwarder) loadPoster(ctx context.Context, client *scrape.Client, setti
 		return nil
 	}
 	if b, err := client.DownloadImage(ctx, detail.PosterURL); err != nil {
-		f.log.Printf("forwarder: poster download failed for %d: %v", it.ID, err)
+		f.log.Printf("%d 的海报下载失败：%v", it.ID, err)
 		return nil
 	} else {
 		return b
@@ -496,7 +495,7 @@ func (f *Forwarder) ForceCheck(ctx context.Context) (RunReport, error) {
 	f.lastRun = rep
 	f.lastRunMu.Unlock()
 	if ferr := f.state.Flush(); ferr != nil {
-		f.log.Printf("forwarder: flush after manual check: %v", ferr)
+		f.log.Printf("手动检查后保存记录失败：%v", ferr)
 	}
 	if err != nil {
 		f.state.SetLastError(err.Error())
@@ -525,9 +524,20 @@ func (f *Forwarder) TestTMDB(ctx context.Context, key, lang string) (string, err
 
 // LookupTMDB resolves one title on demand, returning the parsed release name
 // alongside the match so the dashboard can show how the name was read.
-func (f *Forwarder) LookupTMDB(ctx context.Context, imdbID, title string) (media.Result, tmdb.Entry, error) {
+//
+// key and lang come from the settings form rather than from storage, because
+// the operator usually tests a key before deciding to save it. An empty value
+// falls back to the stored setting, so the lookup still works after the form
+// has been cleared.
+func (f *Forwarder) LookupTMDB(ctx context.Context, imdbID, title, key, lang string) (media.Result, tmdb.Entry, error) {
 	settings := f.cfg.Get()
-	client := tmdb.New(settings.TMDBKey, settings.TMDBLang)
+	if strings.TrimSpace(key) == "" {
+		key = settings.TMDBKey
+	}
+	if strings.TrimSpace(lang) == "" {
+		lang = settings.TMDBLang
+	}
+	client := tmdb.New(key, lang)
 	if !client.Configured() {
 		return media.Parse(title), tmdb.Entry{}, tmdb.ErrNotConfigured
 	}
@@ -545,33 +555,73 @@ func langOrDefault(lang string) string {
 	return lang
 }
 
-// TestTelegram verifies the bot token and chat id.
+// TestTelegram verifies the bot token, resolves the destination, and sends a
+// real message to it.
+//
+// The permission checks are separate from the send so a misconfiguration is
+// reported as a specific problem. A bare send failure only says "Forbidden",
+// which is the same response for a wrong id, a bot that was never added, and a
+// channel where the bot lacks the right to post -- three different fixes.
 func (f *Forwarder) TestTelegram(ctx context.Context, s config.Settings) (string, error) {
 	if s.BotToken == "" {
-		return "", errors.New("bot token is empty")
+		return "", errors.New("机器人 Token 为空")
 	}
 	client := telegram.New(s.BotToken)
 	me, err := client.GetMe(ctx)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("Token 无效：%w", err)
 	}
-	msg := fmt.Sprintf("Connected as @%s (id %d)", me.Username, me.ID)
+	msg := fmt.Sprintf("已连接机器人 @%s（ID %d）", me.Username, me.ID)
 	if s.ChatID == "" {
-		return msg, nil
+		return msg, errors.New("尚未填写目标频道，请填写 @频道用户名 或 -100 开头的频道 ID")
 	}
+
+	ref := normalizeChatRef(s.ChatID)
+	chat, err := client.GetChat(ctx, ref)
+	if err != nil {
+		return msg, fmt.Errorf("无法访问频道 %s：%w\n\n"+
+			"请确认：1) 已把机器人加入该频道；2) 已将其设为管理员。"+
+			"若使用 @用户名 形式，频道必须是公开的", s.ChatID, err)
+	}
+	where := chat.Display()
+	if chat.IsChannel() {
+		msg += fmt.Sprintf("；目标为频道 %s", where)
+	} else {
+		msg += fmt.Sprintf("；目标为群组 %s（不是频道，需在频道管理员中填写）", where)
+	}
+
+	member, err := client.GetChatMember(ctx, ref, me.ID)
+	if err != nil {
+		return msg, fmt.Errorf("无法读取机器人在 %s 中的权限：%w", where, err)
+	}
+	if !member.IsAdmin() {
+		return msg, fmt.Errorf("机器人不是 %s 的管理员（当前身份 %s）。"+
+			"请在频道设置 → 管理员中添加该机器人，并勾选「发布消息」", where, member.Status)
+	}
+	if !member.CanPost(chat.IsChannel()) {
+		return msg, fmt.Errorf("机器人已是 %s 的管理员，但没有「发布消息」权限，请补充勾选", where)
+	}
+
 	threadID, err := parseThreadID(s.MessageTopic)
 	if err != nil {
 		return msg, err
 	}
+	if threadID > 0 && chat.IsChannel() {
+		return msg, fmt.Errorf("频道不支持论坛话题，请清空「论坛话题」")
+	}
+	if threadID > 0 && !chat.IsForum {
+		return msg, fmt.Errorf("%s 未开启话题功能，无法使用「论坛话题」，请清空后再试", where)
+	}
+
 	if _, err := client.Send(ctx, telegram.Post{
 		ChatID:   s.ChatID,
 		ThreadID: threadID,
-		Caption:  "✅ <b>ext.to forwarder</b>\nThis chat is configured correctly.",
+		Caption:  "✅ <b>ext.to 转发面板</b>\n频道配置正确，稍后会向这里推送新种子。",
 		Silent:   true,
 	}, nil, ""); err != nil {
-		return msg, fmt.Errorf("bot works but chat %q is unreachable: %w", s.ChatID, err)
+		return msg, fmt.Errorf("频道 %s 校验通过但发送失败：%w", where, err)
 	}
-	return msg + fmt.Sprintf("; test message delivered to %s", s.ChatID), nil
+	return msg + "；测试消息已发送", nil
 }
 
 // filter applies include/exclude patterns and size bounds.
@@ -667,4 +717,79 @@ func parseThreadID(raw string) (int, error) {
 
 func posterName(it scrape.Item) string {
 	return fmt.Sprintf("%d.jpg", it.ID)
+}
+
+// LookupChat resolves a channel reference and reports whether the bot may post
+// there. It exists because the channel id is the hardest field to fill in:
+// Telegram only reveals -100... ids through the API, and copying one from a
+// message link is error-prone. An operator can paste an @username, a t.me link
+// or an id and see what it resolves to before saving it.
+//
+// token comes from the settings form so the id can be checked before either
+// field is saved, matching how the Telegram test already works; an empty value
+// falls back to the stored token.
+func (f *Forwarder) LookupChat(ctx context.Context, ref, token string) (telegram.Chat, telegram.ChatMember, error) {
+	ref = strings.TrimSpace(ref)
+	if ref == "" {
+		return telegram.Chat{}, telegram.ChatMember{}, errors.New("请填写频道用户名、链接或 ID")
+	}
+	if strings.TrimSpace(token) == "" {
+		token = f.cfg.Get().BotToken
+	}
+	if strings.TrimSpace(token) == "" {
+		return telegram.Chat{}, telegram.ChatMember{}, errors.New("请先填写并保存机器人 Token")
+	}
+	client := telegram.New(token)
+	chat, err := client.GetChat(ctx, normalizeChatRef(ref))
+	if err != nil {
+		return telegram.Chat{}, telegram.ChatMember{}, err
+	}
+	me, err := client.GetMe(ctx)
+	if err != nil {
+		return telegram.Chat{}, telegram.ChatMember{}, err
+	}
+	member, err := client.GetChatMember(ctx, normalizeChatRef(ref), me.ID)
+	if err != nil {
+		return *chat, telegram.ChatMember{}, err
+	}
+	return *chat, *member, nil
+}
+
+// normalizeChatRef accepts the forms an operator is likely to paste:
+// "https://t.me/name", "t.me/name" and "@name" all mean "@name". A private
+// channel's "https://t.me/c/123456789/45" link carries the id without the
+// -100 prefix that the API expects.
+func normalizeChatRef(ref string) string {
+	ref = strings.TrimSpace(ref)
+	if ref == "" {
+		return ref
+	}
+	lower := strings.ToLower(ref)
+	for _, prefix := range []string{"https://t.me/", "http://t.me/", "t.me/"} {
+		if strings.HasPrefix(lower, prefix) {
+			ref = ref[len(prefix):]
+			lower = lower[len(prefix):]
+			break
+		}
+	}
+	// A private-channel link looks like c/123456789/45; the API wants the
+	// internal id, which is -100 followed by the link's id.
+	if strings.HasPrefix(lower, "c/") {
+		parts := strings.Split(strings.Trim(ref[2:], "/"), "/")
+		if len(parts) > 0 && parts[0] != "" {
+			if _, err := strconv.ParseInt(parts[0], 10, 64); err == nil {
+				return "-100" + parts[0]
+			}
+		}
+	}
+	// Trim a trailing topic segment from a public link: t.me/name/42.
+	if i := strings.Index(ref, "/"); i >= 0 {
+		ref = ref[:i]
+	}
+	if ref != "" && !strings.HasPrefix(ref, "@") && !strings.HasPrefix(ref, "-") {
+		if _, err := strconv.ParseInt(ref, 10, 64); err != nil {
+			return "@" + ref
+		}
+	}
+	return ref
 }

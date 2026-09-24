@@ -49,7 +49,7 @@ func main() {
 	if cfg.Get().Enabled {
 		fwd.Start()
 	} else {
-		logger.Printf("monitoring is disabled; enable it in the dashboard or set enabled=true")
+		logger.Printf("监听当前为关闭状态，可在面板「抓取来源」中开启")
 	}
 
 	srv := web.New(web.Options{
@@ -72,7 +72,7 @@ func main() {
 	}
 
 	go func() {
-		logger.Printf("listening on %s (version %s, data %s)", *addr, version, *dataDir)
+		logger.Printf("服务已启动：地址 %s，版本 %s，数据目录 %s", *addr, version, *dataDir)
 		if err := httpSrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			logger.Fatalf("http server: %v", err)
 		}
@@ -82,16 +82,16 @@ func main() {
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
 	<-stop
-	logger.Printf("shutting down")
+	logger.Printf("正在退出")
 
 	fwd.Stop()
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	if err := httpSrv.Shutdown(ctx); err != nil {
-		logger.Printf("http shutdown: %v", err)
+		logger.Printf("HTTP 服务关闭失败：%v", err)
 	}
 	if err := state.Flush(); err != nil {
-		logger.Printf("flush history: %v", err)
+		logger.Printf("保存记录失败：%v", err)
 	}
 }
 

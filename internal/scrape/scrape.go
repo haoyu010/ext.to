@@ -40,7 +40,7 @@ const (
 // ErrBlocked indicates Cloudflare served a challenge instead of content,
 // which almost always means the clearance cookie is missing, stale, or bound
 // to a different IP.
-var ErrBlocked = errors.New("cloudflare challenge returned; refresh cf_clearance")
+var ErrBlocked = errors.New("遇到 Cloudflare 验证，请更新 cf_clearance Cookie")
 
 // Item is a torrent listing entry.
 type Item struct {
@@ -77,7 +77,7 @@ func New(s config.Settings) (*Client, error) {
 	if p := strings.TrimSpace(s.Proxy); p != "" {
 		pu, err := url.Parse(p)
 		if err != nil {
-			return nil, fmt.Errorf("invalid proxy %q: %w", p, err)
+			return nil, fmt.Errorf("代理地址 %q 无效：%w", p, err)
 		}
 		tr.Proxy = http.ProxyURL(pu)
 	}
@@ -119,13 +119,13 @@ func (c *Client) FetchList(ctx context.Context, opt FetchOptions) ([]Item, error
 			u := fmt.Sprintf("%s%s&age=%d&cat=%d&page=%d", BaseURL, listPath, opt.Age, cat, page)
 			body, err := c.get(ctx, u)
 			if err != nil {
-				return out, fmt.Errorf("category %s page %d: %w",
-					config.CategoryNames[cat], page, err)
+				return out, fmt.Errorf("分类「%s」第 %d 页：%w",
+					categoryLabel(cat), page, err)
 			}
 			items, err := ParseList(body)
 			if err != nil {
-				return out, fmt.Errorf("category %s page %d: %w",
-					config.CategoryNames[cat], page, err)
+				return out, fmt.Errorf("分类「%s」第 %d 页：%w",
+					categoryLabel(cat), page, err)
 			}
 			if len(items) == 0 {
 				break
@@ -169,7 +169,7 @@ func (c *Client) MagnetFromDetail(ctx context.Context, item Item, body []byte) (
 	detailURL := c.detailURL(item)
 	token, csrf := parseTokens(body)
 	if token == "" || csrf == "" {
-		return "", errors.New("page token not found; page layout may have changed")
+		return "", errors.New("详情页找不到下载令牌，站点页面结构可能已变动")
 	}
 
 	ts := time.Now().Unix()
@@ -207,13 +207,13 @@ func (c *Client) MagnetFromDetail(ctx context.Context, item Item, body []byte) (
 		Error   string `json:"error"`
 	}
 	if err := json.Unmarshal(raw, &out); err != nil {
-		return "", fmt.Errorf("unexpected magnet response: %s", truncate(string(raw), 120))
+		return "", fmt.Errorf("磁力接口返回了无法解析的内容：%s", truncate(string(raw), 120))
 	}
 	if !out.Success {
 		if out.Error == "" {
-			out.Error = "unknown error"
+			out.Error = "未知错误"
 		}
-		return "", fmt.Errorf("magnet rejected: %s", out.Error)
+		return "", fmt.Errorf("磁力接口拒绝了请求：%s", out.Error)
 	}
 	// The endpoint escapes forward slashes in tracker URLs.
 	if out.URL != "" {
@@ -222,7 +222,7 @@ func (c *Client) MagnetFromDetail(ctx context.Context, item Item, body []byte) (
 	if out.Hash != "" {
 		return "magnet:?xt=urn:btih:" + out.Hash, nil
 	}
-	return "", errors.New("magnet endpoint returned no link")
+	return "", errors.New("磁力接口没有返回链接")
 }
 
 // Detail holds the metadata scraped from a torrent's detail page.
@@ -300,7 +300,7 @@ func (c *Client) FetchPoster(ctx context.Context, item Item) (string, error) {
 // is served from the tracker itself.
 func (c *Client) DownloadImage(ctx context.Context, rawURL string) ([]byte, error) {
 	if rawURL == "" {
-		return nil, errors.New("empty image url")
+		return nil, errors.New("海报地址为空")
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
 	if err != nil {
@@ -318,7 +318,7 @@ func (c *Client) DownloadImage(ctx context.Context, rawURL string) ([]byte, erro
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("image fetch: HTTP %d", resp.StatusCode)
+		return nil, fmt.Errorf("下载海报失败：HTTP %d", resp.StatusCode)
 	}
 	// Posters are small; 12 MiB is a generous cap that still bounds memory.
 	return io.ReadAll(io.LimitReader(resp.Body, 12<<20))
@@ -329,6 +329,18 @@ func (c *Client) detailURL(item Item) string {
 		return item.URL
 	}
 	return fmt.Sprintf("%s/%s/", BaseURL, strings.Trim(item.Slug, "/"))
+}
+
+// categoryLabel names a category for an operator-facing error, preferring the
+// Chinese label the dashboard shows over the internal English one.
+func categoryLabel(id int) string {
+	if zh, ok := config.CategoryNamesZH[id]; ok {
+		return zh
+	}
+	if en, ok := config.CategoryNames[id]; ok {
+		return en
+	}
+	return strconv.Itoa(id)
 }
 
 func (c *Client) get(ctx context.Context, u string) ([]byte, error) {
@@ -351,7 +363,7 @@ func (c *Client) get(ctx context.Context, u string) ([]byte, error) {
 		return nil, ErrBlocked
 	}
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("HTTP %d", resp.StatusCode)
+		return nil, fmt.Errorf("服务器返回 HTTP %d", resp.StatusCode)
 	}
 	return body, nil
 }

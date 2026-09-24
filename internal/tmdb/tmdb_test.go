@@ -191,4 +191,9 @@ func TestUnauthorizedKeyIsReported(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "401") {
 		t.Fatalf("err = %v, want a 401 message", err)
 	}
+	// The dashboard maps this cause to its own Chinese wording, so the error
+	// has to stay matchable after being wrapped.
+	if !errors.Is(err, ErrUnauthorized) {
+		t.Errorf("err = %v, want it to wrap ErrUnauthorized", err)
+	}
 }

@@ -39,6 +39,15 @@ var ErrNotConfigured = errors.New("tmdb api key is not configured")
 // ErrNoMatch indicates the release could not be resolved to a TMDB entry.
 var ErrNoMatch = errors.New("no tmdb match")
 
+// ErrUnauthorized means TMDB accepted the request but not the credential. It
+// is a distinct value so the dashboard can name the fix in its own words
+// rather than showing the raw upstream English.
+var ErrUnauthorized = errors.New("tmdb rejected the api key")
+
+// ErrRateLimited means the account is being throttled, which a slower scan
+// resolves.
+var ErrRateLimited = errors.New("tmdb rate limit reached")
+
 // Entry is a resolved TMDB record.
 type Entry struct {
 	ID            int     `json:"id"`
@@ -431,10 +440,10 @@ func (c *Client) get(ctx context.Context, path string, q url.Values, out any) er
 		return ErrNoMatch
 	}
 	if resp.StatusCode == http.StatusUnauthorized {
-		return errors.New("tmdb rejected the api key (401); check the key")
+		return fmt.Errorf("%w: 401", ErrUnauthorized)
 	}
 	if resp.StatusCode == http.StatusTooManyRequests {
-		return errors.New("tmdb rate limit reached (429); slow the scan down")
+		return fmt.Errorf("%w: 429", ErrRateLimited)
 	}
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("tmdb HTTP %d: %s", resp.StatusCode, truncate(string(body), 160))

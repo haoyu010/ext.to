@@ -64,6 +64,89 @@ func (c *Client) GetMe(ctx context.Context) (*Me, error) {
 	return &me, nil
 }
 
+// Chat is the subset of getChat needed to confirm a destination before
+// publishing to it.
+type Chat struct {
+	ID       int64  `json:"id"`
+	Type     string `json:"type"` // private, group, supergroup, channel
+	Title    string `json:"title"`
+	Username string `json:"username"`
+	// IsForum marks a supergroup whose topics accept message_thread_id.
+	IsForum bool `json:"is_forum"`
+}
+
+// IsChannel reports whether the chat is a broadcast channel rather than a
+// group, which changes how the bot has to be added.
+func (ch Chat) IsChannel() bool { return ch.Type == "channel" }
+
+// Display names the chat for an operator message, preferring the @username
+// because that is what they typed into the settings form.
+func (ch Chat) Display() string {
+	name := ch.Title
+	if name == "" {
+		name = strconv.FormatInt(ch.ID, 10)
+	}
+	if ch.Username != "" {
+		return fmt.Sprintf("%s (@%s)", name, ch.Username)
+	}
+	return name
+}
+
+// GetChat resolves a chat id, @username or numeric id.
+func (c *Client) GetChat(ctx context.Context, chatID string) (*Chat, error) {
+	var ch Chat
+	if err := c.call(ctx, "getChat", url.Values{"chat_id": {chatID}}, &ch); err != nil {
+		return nil, err
+	}
+	return &ch, nil
+}
+
+// ChatMember is the subset of getChatMember needed to tell whether the bot may
+// post.
+type ChatMember struct {
+	Status          string `json:"status"` // creator, administrator, member, ...
+	CanPostMessages bool   `json:"can_post_messages"`
+}
+
+func (m ChatMember) IsAdmin() bool {
+	return m.Status == "creator" || m.Status == "administrator"
+}
+
+// CanPost reports whether the bot may publish to the chat.
+//
+// Telegram only sends can_post_messages on the administrator variant of the
+// response; the owner variant has no such field, so a channel's creator would
+// read as "false" and be refused even though it may obviously post. The flag
+// is therefore consulted only for a plain administrator.
+func (m ChatMember) CanPost(isChannel bool) bool {
+	if !isChannel {
+		// A group administrator may always send messages.
+		return m.IsAdmin()
+	}
+	switch m.Status {
+	case "creator":
+		return true
+	case "administrator":
+		return m.CanPostMessages
+	default:
+		return false
+	}
+}
+
+// GetChatMember returns one member's status. It is used to check the bot's own
+// rights in the destination chat.
+func (c *Client) GetChatMember(ctx context.Context, chatID string, userID int64) (*ChatMember, error) {
+	var m ChatMember
+	form := url.Values{
+		"chat_id": {chatID},
+		"user_id": {strconv.FormatInt(userID, 10)},
+	}
+	if err := c.call(ctx, "getChatMember", form, &m); err != nil {
+		return nil, err
+	}
+	return &m, nil
+}
+
 // Post describes one outgoing message.
 type Post struct {
 	ChatID string

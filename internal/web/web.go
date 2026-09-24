@@ -18,6 +18,7 @@ import (
 	"github.com/haoyu010/ext.to/internal/config"
 	"github.com/haoyu010/ext.to/internal/forwarder"
 	"github.com/haoyu010/ext.to/internal/store"
+	"github.com/haoyu010/ext.to/internal/tmdb"
 )
 
 // Server exposes the dashboard and its backing API.
@@ -81,6 +82,7 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("POST /api/test-telegram", s.auth(s.handleTestTelegram))
 	mux.HandleFunc("POST /api/test-tmdb", s.auth(s.handleTestTMDB))
 	mux.HandleFunc("POST /api/tmdb-lookup", s.auth(s.handleTMDBLookup))
+	mux.HandleFunc("POST /api/chat-lookup", s.auth(s.handleChatLookup))
 	mux.HandleFunc("POST /api/start", s.auth(s.handleStart))
 	mux.HandleFunc("POST /api/stop", s.auth(s.handleStop))
 	mux.HandleFunc("POST /api/clear", s.auth(s.handleClear))
@@ -296,6 +298,10 @@ func (s *Server) handlePutSettings(w http.ResponseWriter, r *http.Request) {
 	incoming.BotToken = resolveSecret(incoming.BotToken, cur.BotToken)
 	incoming.Clearance = resolveSecret(incoming.Clearance, cur.Clearance)
 	incoming.Session = resolveSecret(incoming.Session, cur.Session)
+	// TMDBKey is masked for display too, so it needs the same treatment. Without
+	// it, saving any pane would write the literal mask back as the API key and
+	// break TMDB matching.
+	incoming.TMDBKey = resolveSecret(incoming.TMDBKey, cur.TMDBKey)
 	if incoming.AdminPassword == "" || incoming.AdminPassword == passwordPlaceholder {
 		incoming.AdminPassword = cur.AdminPassword
 	}
@@ -307,7 +313,7 @@ func (s *Server) handlePutSettings(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
 		return
 	}
-	s.log.Printf("web: settings updated")
+	s.log.Printf("面板设置已保存")
 
 	// Apply the new monitoring state immediately.
 	if next := s.cfg.Get(); next.Enabled {
@@ -443,8 +449,9 @@ func (s *Server) handleTestTMDB(w http.ResponseWriter, r *http.Request) {
 // what a release name maps to before enabling enrichment.
 func (s *Server) handleTMDBLookup(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		Title  string `json:"title"`
-		IMDbID string `json:"imdb_id"`
+		Title   string `json:"title"`
+		IMDbID  string `json:"imdb_id"`
+		TMDBKey string `json:"tmdb_key"`
 	}
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<16)).Decode(&body); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "malformed request body"})
@@ -456,7 +463,12 @@ func (s *Server) handleTMDBLookup(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 	defer cancel()
-	parsed, entry, err := s.fwd.LookupTMDB(ctx, body.IMDbID, body.Title)
+	// The form's key is used so it can be tested before saving. It arrives
+	// either blank or masked when the operator has not changed it, and
+	// resolveSecret turns both of those back into the stored key; otherwise the
+	// literal "********" would be sent to TMDB as the credential.
+	key := resolveSecret(body.TMDBKey, s.cfg.Get().TMDBKey)
+	parsed, entry, err := s.fwd.LookupTMDB(ctx, body.IMDbID, body.Title, key, "")
 	resp := map[string]any{
 		"parsed": map[string]any{
 			"title":   parsed.Title,
@@ -469,13 +481,84 @@ func (s *Server) handleTMDBLookup(w http.ResponseWriter, r *http.Request) {
 	}
 	if err != nil {
 		resp["ok"] = false
-		resp["error"] = err.Error()
+		resp["error"] = lookupErrorText(err)
 		writeJSON(w, http.StatusOK, resp)
 		return
 	}
 	resp["ok"] = true
 	resp["entry"] = entry
 	writeJSON(w, http.StatusOK, resp)
+}
+
+// lookupErrorText turns a resolver failure into something the operator can act
+// on. A missing key and an unmatched title are different problems with
+// different fixes, so they must not share the generic "no match" wording.
+func lookupErrorText(err error) string {
+	switch {
+	case errors.Is(err, tmdb.ErrNotConfigured):
+		return "尚未配置 TMDB API Key。请在上方「TMDB API Key」中填写后再解析，" +
+			"未保存也会生效；保存后长期可用。"
+	case errors.Is(err, tmdb.ErrNoMatch):
+		return "没有匹配到 TMDB 条目。可尝试填写 IMDb 编号，或检查发布名是否符合 TMDB 的标题。"
+	case errors.Is(err, tmdb.ErrUnauthorized):
+		return "TMDB 拒绝了该 API Key（401）。请检查是否复制完整、是否已被重置，" +
+			"v3 密钥与 v4 令牌都可以，注意不要带多余空格。"
+	case errors.Is(err, tmdb.ErrRateLimited):
+		return "TMDB 请求过于频繁（429），请稍后再试或调大扫描间隔。"
+	default:
+		return "TMDB 查询失败：" + err.Error()
+	}
+}
+
+// handleChatLookup resolves a channel reference the operator pasted, so the
+// panel can show the real id and the bot's rights before the value is saved.
+func (s *Server) handleChatLookup(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		ChatRef  string `json:"chat_ref"`
+		BotToken string `json:"bot_token"`
+	}
+	if r.Body != nil {
+		_ = json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<16)).Decode(&body)
+	}
+	if strings.TrimSpace(body.ChatRef) == "" {
+		body.ChatRef = s.cfg.Get().ChatID
+	}
+	if strings.TrimSpace(body.ChatRef) == "" {
+		writeJSON(w, http.StatusOK, map[string]any{
+			"ok":    false,
+			"error": "请先填写频道用户名、链接或 ID",
+		})
+		return
+	}
+	// The token on screen is used so a channel can be checked and saved in one
+	// visit; it arrives masked when untouched, and resolveSecret keeps the
+	// stored value in that case.
+	token := resolveSecret(body.BotToken, s.cfg.Get().BotToken)
+
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	defer cancel()
+	chat, member, err := s.fwd.LookupChat(ctx, body.ChatRef, token)
+	if err != nil {
+		writeJSON(w, http.StatusOK, map[string]any{"ok": false, "error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok": true,
+		"chat": map[string]any{
+			"id":         chat.ID,
+			"type":       chat.Type,
+			"title":      chat.Title,
+			"username":   chat.Username,
+			"is_forum":   chat.IsForum,
+			"is_channel": chat.IsChannel(),
+			"display":    chat.Display(),
+		},
+		"member": map[string]any{
+			"status":   member.Status,
+			"is_admin": member.IsAdmin(),
+			"can_post": member.CanPost(chat.IsChannel()),
+		},
+	})
 }
 
 func (s *Server) handleStart(w http.ResponseWriter, _ *http.Request) {
@@ -514,7 +597,7 @@ func (s *Server) handleClear(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
 	}
-	s.log.Printf("web: history cleared; the next scan will rebuild a baseline")
+	s.log.Printf("转发记录已清空，下次扫描会重建基线")
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 

@@ -129,6 +129,11 @@
   .side .foot .who { font-size: 12.5px; color: var(--muted); padding: 0 2px 10px; }
 
   main.body { flex: 1; min-width: 0; padding: 28px; display: grid; gap: 22px; align-content: start; }
+  /* A pane stacks its header, cards and action rows. Both the pane and any form
+     wrapping one section's settings need the same gaps, since the form is what
+     actually holds the cards on most panes: without this the cards, which no
+     longer carry a margin of their own, would sit flush against each other. */
+  .pane, .pane > form { display: grid; gap: 16px; align-content: start; }
   .pagehead { display: flex; align-items: flex-start; gap: 18px; }
   .pagehead h2 { font-size: 26px; line-height: 1.2; font-weight: 700; letter-spacing: -0.4px; }
   .pagehead p { margin-top: 6px; color: var(--muted); font-size: 13.5px; max-width: 70ch; }
@@ -621,6 +626,7 @@
         <button class="btn" id="btnTestTmdb" type="button">测试 TMDB</button>
       </div>
 
+      <form id="tmdbForm">
       <div class="card">
         <h3>匹配规则</h3>
         <p class="hint">
@@ -631,7 +637,7 @@
         <label class="field">
           <span class="lbl">TMDB API Key</span>
           <input type="password" id="setTmdbKey" autocomplete="off" placeholder="v3 密钥或 v4 令牌">
-          <span class="help">留空表示保持已保存的值；清空后不再启用 TMDB。</span>
+          <span class="help">留空表示保持已保存的值（保存其他分栏时也不会覆盖）。填写后可通过上方「测试 TMDB」或下方「解析」立即验证，无需先保存。</span>
         </label>
         <div class="row">
           <label class="field">
@@ -653,6 +659,11 @@
           <span class="t"><b>只推送匹配到 TMDB 的种子</b><small>未匹配到的条目会被跳过而不是推送，记录中计入「跳过」。</small></span>
         </label>
       </div>
+
+      <div class="actions">
+        <button class="btn primary" type="submit">保存设置</button>
+      </div>
+      </form>
 
       <div class="card">
         <h3>标题解析测试</h3>
@@ -693,15 +704,22 @@
               <span class="help">留空表示保持已保存的值。</span>
             </label>
             <label class="field">
-              <span class="lbl">Chat ID</span>
-              <input type="text" id="setChatID" placeholder="-1001234567890">
-              <span class="help">频道或群组 ID，例如 <span class="kbd">-1001234567890</span>。</span>
+              <span class="lbl">频道</span>
+              <input type="text" id="setChatID" placeholder="@channel 或 -1001234567890">
+              <span class="help">
+                可填 <span class="kbd">@用户名</span>、<span class="kbd">-100</span> 开头的 ID
+                或 <span class="kbd">t.me</span> 链接，点「解析频道」核对后再保存。
+              </span>
             </label>
           </div>
+          <div class="actions">
+            <button class="btn" id="btnChatLookup" type="button">解析频道</button>
+          </div>
+          <div id="chatOut" hidden></div>
           <label class="field">
             <span class="lbl">论坛话题（可选）</span>
             <input type="text" id="setTopic" placeholder="42 或 https://t.me/c/1234567890/42">
-            <span class="help">推送到群组内的指定话题，留空则发到默认话题。</span>
+            <span class="help">只对开启了话题的群组有效；频道不支持，留空即可。</span>
           </label>
         </div>
 
@@ -1156,7 +1174,9 @@ function renderLogs(lines) {
   const atBottom = box.scrollTop + box.clientHeight >= box.scrollHeight - 30;
   box.innerHTML = lines.map((l) => {
     const t = new Date(l.time).toLocaleTimeString();
-    const cls = /error|failed|失败/i.test(l.message) ? "e" : "";
+    // Log lines are Chinese now, so the highlighter has to know the Chinese
+    // failure words too; the English ones stay for anything not yet translated.
+    const cls = /error|failed|失败|出错|不可用|无效|拒绝/i.test(l.message) ? "e" : "";
     return '<span class="t">' + esc(t) + "</span> <span class='" + cls + "'>" + esc(l.message.trim()) + "</span>";
   }).join("\n");
   if (atBottom) box.scrollTop = box.scrollHeight;
@@ -1283,6 +1303,55 @@ async function testTMDB(btn) {
   }
 }
 
+// lookupChat resolves whatever the operator pasted into the channel field, so
+// the real id and the bot's rights are visible before the value is saved. The
+// channel id is the one field Telegram does not show anywhere in its UI.
+async function lookupChat(btn) {
+  setBusy(btn, true, "解析中…");
+  try {
+    const d = await api("POST", "/api/chat-lookup", {
+      chat_ref: $("setChatID").value.trim(),
+      bot_token: $("setBotToken").value.trim()
+    });
+    const box = $("chatOut");
+    box.hidden = false;
+    if (!d.ok) {
+      box.innerHTML = "<div class='warnbox'>" + esc(d.error || "解析失败") + "</div>";
+      return;
+    }
+    const c = d.chat || {}, m = d.member || {};
+    const type = c.is_channel ? "频道" : (c.type === "supergroup" ? "超级群组" : "群组");
+    const roleTxt = m.is_admin ? "管理员" : "普通成员";
+    let html = "<div class='metricrow'>" +
+      "<div class='metric'><div class='k'>名称</div><div class='v' style='font-size:15px'>" +
+      esc(c.display || "—") + "</div></div>" +
+      "<div class='metric'><div class='k'>类型</div><div class='v' style='font-size:15px'>" + type + "</div></div>" +
+      "<div class='metric'><div class='k'>频道 ID</div><div class='v' style='font-size:15px'>" + esc(c.id) + "</div></div>" +
+      "<div class='metric'><div class='k'>机器人身份</div><div class='v' style='font-size:15px'>" + roleTxt + "</div></div>" +
+      "</div>";
+    if (m.can_post) {
+      html += "<div class='okbox' style='margin-top:14px'>可以发送消息。点下方「保存设置」即可开始推送；" +
+        "也可直接用上面的「测试 Telegram」发一条测试消息。</div>";
+    } else if (!m.is_admin) {
+      html += "<div class='warnbox' style='margin-top:14px'>机器人还不是该" + type +
+        "的管理员。请在 Telegram 里打开" + type +
+        "设置 → 管理员 → 添加该机器人，并勾选「发布消息」。</div>";
+    } else {
+      html += "<div class='warnbox' style='margin-top:14px'>机器人已是管理员，但没有「发布消息」权限，" +
+        "请在管理员权限里补上勾选。</div>";
+    }
+    if (!c.is_channel) {
+      html += "<div class='warnbox' style='margin-top:14px'>这是" + type +
+        "，不是频道。如果要推送到频道，请把频道的 @用户名 或 ID 填在这里。</div>";
+    }
+    box.innerHTML = html;
+  } catch (e) {
+    toast("解析频道失败", e.message, "err");
+  } finally {
+    setBusy(btn, false);
+  }
+}
+
 async function runLookup(ev) {
   ev.preventDefault();
   const btn = ev.target.querySelector("button[type=submit]");
@@ -1290,7 +1359,10 @@ async function runLookup(ev) {
   try {
     const d = await api("POST", "/api/tmdb-lookup", {
       title: $("lookupTitle").value.trim(),
-      imdb_id: $("lookupIMDb").value.trim()
+      imdb_id: $("lookupIMDb").value.trim(),
+      // Send the key on screen so it can be tested before saving. The server
+      // falls back to the stored key when this is blank.
+      tmdb_key: $("setTmdbKey").value.trim()
     });
     const p = d.parsed || {};
     let html = "<div class='metricrow'>" +
@@ -1309,8 +1381,11 @@ async function runLookup(ev) {
         "（" + (e.vote_count || 0) + " 票）· 匹配方式 " + esc(e.matched_by) +
         "\nhttps://www.themoviedb.org/" + esc(e.type) + "/" + e.id + "</div>";
     } else {
-      html += "<div class='warnbox' style='margin-top:16px'>没有匹配到 TMDB 条目：" +
-        esc(d.error || "未找到") + "</div>";
+      // The server already words each failure for its own cause, so it is shown
+      // as-is: prefixing everything with "no match" hid a missing API key
+      // behind a wording that pointed at the release name instead.
+      html += "<div class='warnbox' style='margin-top:16px'>" +
+        esc(d.error || "没有匹配到 TMDB 条目。") + "</div>";
     }
     $("lookupOut").innerHTML = html;
     $("lookupOut").hidden = false;
@@ -1378,6 +1453,7 @@ function wire() {
   $("btnTestTg").onclick = (e) => testTelegram(e.target);
   $("btnTg2").onclick = (e) => testTelegram(e.target);
   $("btnTestTmdb").onclick = (e) => testTMDB(e.target);
+  $("btnChatLookup").onclick = (e) => lookupChat(e.target);
 
   $("btnReload").onclick = () => loadSettings()
     .then(() => toast("已重新载入", "未保存的修改已丢弃。", "ok"))
@@ -1421,6 +1497,7 @@ function wire() {
   };
   $("settingsForm").addEventListener("submit", (e) => saveSettings(e, "抓取设置已生效。"));
   $("telegramForm").addEventListener("submit", (e) => saveSettings(e, "推送设置已生效。"));
+  $("tmdbForm").addEventListener("submit", (e) => saveSettings(e, "TMDB 设置已生效。"));
   $("accountForm").addEventListener("submit", (e) => saveSettings(e, "下次登录请使用新凭据。"));
 }
 
