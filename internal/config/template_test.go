@@ -126,42 +126,79 @@ func TestRenderDropsEmptyLabelLines(t *testing.T) {
 
 // The torrent link must always resolve to something usable. A magnet is what a
 // reader wants; when the per-page magnet could not be resolved the detail page
-// is the honest fallback, and the label follows the destination so the caption
-// never promises a magnet it does not have.
+// is the honest fallback, and the text shown follows the destination so the
+// caption never promises a magnet it does not have.
 func TestRenderTorrentLinkFallsBackToDetailPage(t *testing.T) {
-	magnet := "magnet:?xt=urn:btih:DEADBEEF&tr=udp%3A%2F%2Ft.example%3A6969"
-	got := Render("<a href=\"{torrent_url}\">{torrent_label}</a>", TemplateData{
-		Magnet: magnet, URL: "https://ext.to/y-11/",
+	got := Render("<a href=\"{torrent_url}\">{torrent_text}</a>", TemplateData{
+		Magnet: "magnet:?xt=urn:btih:DEADBEEF&tr=udp%3A%2F%2Ft.example%3A6969",
+		URL:    "https://ext.to/y-11/",
 	})
-	if !strings.Contains(got, "种子链接") {
-		t.Errorf("with a magnet the label should say 种子链接: %q", got)
-	}
-	// The query separator has to be escaped or Telegram reads the link as
-	// truncated at the first ampersand.
-	if !strings.Contains(got, "DEADBEEF&amp;tr=") {
-		t.Errorf("magnet was not escaped for HTML: %q", got)
+	if want := `<a href="magnet:?xt=urn:btih:DEADBEEF&amp;tr=udp%3A%2F%2Ft.example%3A6969">magnet:?xt=urn:btih:DEADBEEF</a>`; got != want {
+		t.Errorf("Render =\n  %q\nwant\n  %q", got, want)
 	}
 
-	got = Render("<a href=\"{torrent_url}\">{torrent_label}</a>", TemplateData{
+	got = Render("<a href=\"{torrent_url}\">{torrent_text}</a>", TemplateData{
 		URL: "https://ext.to/y-11/",
 	})
-	if !strings.Contains(got, "详情页") || !strings.Contains(got, "https://ext.to/y-11/") {
-		t.Errorf("without a magnet the caption should fall back to the detail page: %q", got)
+	if want := `<a href="https://ext.to/y-11/">https://ext.to/y-11/</a>`; got != want {
+		t.Errorf("without a magnet the caption should show the detail page: %q", got)
 	}
 	if strings.Contains(got, "magnet") {
 		t.Errorf("no magnet was available, so none may be advertised: %q", got)
 	}
 
 	// Neither a magnet nor a detail page: the whole line has to go. Publishing
-	// "<a href=\"\">详情页</a>" would be a dead link in a sent message.
-	if got := Render("正文\n<a href=\"{torrent_url}\">{torrent_label}</a>", TemplateData{}); got != "正文" {
+	// "<a href=\"\"></a>" would be a dead link in a sent message.
+	if got := Render("正文\n<a href=\"{torrent_url}\">{torrent_text}</a>", TemplateData{}); got != "正文" {
 		t.Errorf("a link with no destination was published: %q", got)
 	}
 	// A line that pairs the link with other text is content, not a bare link,
 	// and must be left for the operator to decide about.
-	kept := Render("正文\n<a href=\"{torrent_url}\">{torrent_label}</a> · {size}", TemplateData{Size: "1 GB"})
+	kept := Render("正文\n<a href=\"{torrent_url}\">{torrent_text}</a> · {size}", TemplateData{Size: "1 GB"})
 	if !strings.Contains(kept, "· 1 GB") || !strings.Contains(kept, `href=""`) {
 		t.Errorf("a link line carrying other text was not left alone: %q", kept)
+	}
+}
+
+// {torrent_label} names the destination in words, the way the 1.3.0 and 1.3.1
+// presets used it. It is kept so a caption written against those releases keeps
+// rendering, and it has to agree with {torrent_text} about the destination.
+func TestRenderTorrentLabelNamesTheDestination(t *testing.T) {
+	got := Render("{torrent_label}|{torrent_text}", TemplateData{
+		Magnet: "magnet:?xt=urn:btih:DEADBEEF&tr=udp%3A%2F%2Ft.example%3A6969",
+	})
+	if want := "种子链接|magnet:?xt=urn:btih:DEADBEEF"; got != want {
+		t.Errorf("Render = %q, want %q", got, want)
+	}
+	if got := Render("{torrent_label}", TemplateData{URL: "https://ext.to/y-11/"}); got != "详情页" {
+		t.Errorf("without a magnet the label should say 详情页: %q", got)
+	}
+}
+
+// A real ext.to magnet carries two dozen trackers and runs to about 1140
+// characters, which Telegram rejects as caption text. The text form keeps only
+// the info hash, and the href keeps the whole link so a client still reaches
+// every tracker the tracker listed.
+func TestVisibleMagnetKeepsOnlyTheInfoHash(t *testing.T) {
+	long := "magnet:?xt=urn:btih:cafebabe" + strings.Repeat("&tr=udp://tracker.example:6969/announce", 24)
+	if got, want := visibleMagnet(long), "magnet:?xt=urn:btih:cafebabe"; got != want {
+		t.Errorf("visibleMagnet = %q, want %q", got, want)
+	}
+	// A link the site did not shape this way is passed through untouched: a
+	// link that cannot be shortened beats a caption with no link in it.
+	for _, in := range []string{
+		"magnet:?dn=name.only",
+		"https://ext.to/y-11/",
+		"",
+	} {
+		if got := visibleMagnet(in); got != in {
+			t.Errorf("visibleMagnet(%q) = %q, want it unchanged", in, got)
+		}
+	}
+	// A hash with no trackers is already short and must survive verbatim.
+	short := "magnet:?xt=urn:btih:DEADBEEF"
+	if got := visibleMagnet(short); got != short {
+		t.Errorf("visibleMagnet(%q) = %q, want it unchanged", short, got)
 	}
 }
 
@@ -260,6 +297,22 @@ func TestLegacyTemplateMigratesOnlyWhenUntouched(t *testing.T) {
 		t.Errorf("the old TMDB preset was not migrated:\n%q", got)
 	}
 
+	// The 1.3.0 / 1.3.1 presets linked the torrent but labelled it with words.
+	// An install that never touched them carries them verbatim and must move
+	// onto the wording that prints the link.
+	oldDefault := "名称：{title}\n分类：{category}\n大小：{size} · {files} 个文件\n" +
+		"做种：{seeds} · 下载：{leeches}\n发布：{age}\n\n" +
+		`<a href="{torrent_url}">{torrent_label}</a>`
+	if got := migrateLegacyTemplate(oldDefault); got != DefaultTemplate {
+		t.Errorf("the 1.3.1 default preset was not migrated:\n%q", got)
+	}
+	oldTmdb131 := "片名：{tmdb_title}{season_label}\n年份：{tmdb_year}\nTMDB：{tmdb_ref}\n" +
+		"分类：{category_tmdb}\n\n{title}\n简介：{tmdb_overview}\n分享：{uploader}\n大小：{size}\n\n" +
+		`<a href="{torrent_url}">{torrent_label}</a>`
+	if got := migrateLegacyTemplate(oldTmdb131); got != TMDBTemplate {
+		t.Errorf("the 1.3.1 TMDB preset was not migrated:\n%q", got)
+	}
+
 	// An edited template stays as written, even one that began as a preset.
 	mine := old + "\n我自己加的一行"
 	if got := migrateLegacyTemplate(mine); got != mine {
@@ -275,11 +328,18 @@ func TestLegacyTemplateMigratesOnlyWhenUntouched(t *testing.T) {
 }
 
 // The shipped presets must link the torrent rather than the tracker page, and
-// must not leave a dead link when no magnet could be resolved.
+// must not leave a dead link when no magnet could be resolved. The link is
+// printed as text, so a forwarded caption still carries something usable.
 func TestShippedTemplatesLinkTheTorrent(t *testing.T) {
 	for name, tpl := range map[string]string{"DefaultTemplate": DefaultTemplate, "TMDBTemplate": TMDBTemplate} {
 		if !strings.Contains(tpl, "{torrent_url}") {
 			t.Errorf("%s does not link the torrent", name)
+		}
+		if !strings.Contains(tpl, "{torrent_text}") {
+			t.Errorf("%s does not print the link, so a forwarded caption loses it", name)
+		}
+		if strings.Contains(tpl, "{torrent_label}") {
+			t.Errorf("%s still shows the words instead of the link", name)
 		}
 		if strings.Contains(tpl, `href="{url}"`) {
 			t.Errorf("%s links the detail page where the torrent is expected", name)
@@ -288,8 +348,8 @@ func TestShippedTemplatesLinkTheTorrent(t *testing.T) {
 			Title: "某片 2026", Size: "1.43 GB", Magnet: "magnet:?xt=urn:btih:DEADBEEF",
 			TMDBTitle: "某片", TMDBYear: 2026, TMDBID: 287994, TMDBType: "tv",
 		})
-		if !strings.Contains(out, "magnet:?xt=urn:btih:DEADBEEF") {
-			t.Errorf("%s did not render the magnet:\n%s", name, out)
+		if want := `<a href="magnet:?xt=urn:btih:DEADBEEF">magnet:?xt=urn:btih:DEADBEEF</a>`; !strings.Contains(out, want) {
+			t.Errorf("%s did not render the magnet as text:\n%s", name, out)
 		}
 	}
 }
@@ -300,10 +360,15 @@ func TestShippedTemplatesLinkTheTorrent(t *testing.T) {
 // survive the longest values the fields can hold.
 //
 // The limit is counted over the visible text: a link's href is markup, not
-// text. That distinction decides whether the preset is usable at all, because
-// a real magnet carries every tracker and runs to roughly 1140 characters on
-// its own (measured on the deployed install) — five times the caption limit if
-// the href were counted.
+// text. That was measured against the live Bot API, and it is the reason the
+// preset can print a magnet at all: the full link runs to roughly 1140
+// characters (measured on the deployed install) and is rejected the moment it
+// appears as text, while the same link as an href is accepted alongside a
+// short label.
+//
+// So the budget has two halves and both are pinned here: the visible text has
+// to fit, and the visible link has to be the short form, because the whole link
+// printed as text is what Telegram refuses.
 func TestShippedTemplateFitsTheCaptionLimit(t *testing.T) {
 	worst := TemplateData{
 		Title:        strings.Repeat("超长发布名 ", 20),
@@ -323,6 +388,13 @@ func TestShippedTemplateFitsTheCaptionLimit(t *testing.T) {
 		if visible > 1024 {
 			t.Errorf("%s renders %d visible runes, over Telegram's 1024 caption limit:\n%s",
 				name, visible, out)
+		}
+		// The full magnet is 1189 characters here; only the href may hold it.
+		if strings.Contains(out, "&amp;tr=") && !strings.Contains(out, `href="magnet:`) {
+			t.Errorf("%s prints trackers outside the href:\n%s", name, out)
+		}
+		if strings.Contains(out, ">magnet:?xt=urn:btih:"+strings.Repeat("a", 40)+"&") {
+			t.Errorf("%s prints the whole magnet as text:\n%s", name, out)
 		}
 	}
 }

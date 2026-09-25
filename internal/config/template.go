@@ -20,13 +20,17 @@ import (
 // detail page is a web page nobody wants mid-download, and {torrent_url}
 // already falls back to it when no magnet could be resolved, so the line never
 // becomes a dead link.
+//
+// Its text is the link itself rather than the words "种子链接": a reader
+// copies a caption by copying text, and the words are worth nothing once the
+// message has been forwarded somewhere the anchor no longer renders.
 const DefaultTemplate = `名称：{title}
 分类：{category}
 大小：{size} · {files} 个文件
 做种：{seeds} · 下载：{leeches}
 发布：{age}
 
-<a href="{torrent_url}">{torrent_label}</a>`
+<a href="{torrent_url}">{torrent_text}</a>`
 
 // TMDBTemplate is an optional caption preset that leads with the matched TMDB
 // entry. It is offered in the dashboard rather than applied by default, because
@@ -51,7 +55,7 @@ TMDB：{tmdb_ref}
 分享：{uploader}
 大小：{size}
 
-<a href="{torrent_url}">{torrent_label}</a>`
+<a href="{torrent_url}">{torrent_text}</a>`
 
 // legacyTemplates are the presets this project shipped before the torrent link
 // was introduced, kept so an existing install can be moved onto the current
@@ -62,6 +66,14 @@ TMDB：{tmdb_ref}
 // migrated. The migration is needed because the old pairs link the tracker's
 // detail page and never reference {magnet}, so an install that never touched
 // them has no way to learn that a torrent link exists.
+//
+// The 1.3.0 and 1.3.1 presets are here for the same reason one release later:
+// they linked the torrent but labelled it "种子链接", and an install that never
+// edited its caption would otherwise keep showing the words instead of the
+// link. The wording of the migration is the same: only a verbatim preset moves.
+//
+// The two oldest pairs also carry the presets that replaced them, so an
+// install coming from 1.2.x lands on the 1.3.2 wording in one step.
 var legacyTemplates = map[string]string{
 	`<b>{title}</b>
 
@@ -80,6 +92,24 @@ var legacyTemplates = map[string]string{
 🕐 {age}
 
 <a href="{tmdb_url}">TMDB</a> · <a href="{url}">ext.to</a>`: TMDBTemplate,
+	`名称：{title}
+分类：{category}
+大小：{size} · {files} 个文件
+做种：{seeds} · 下载：{leeches}
+发布：{age}
+
+<a href="{torrent_url}">{torrent_label}</a>`: DefaultTemplate,
+	`片名：{tmdb_title}{season_label}
+年份：{tmdb_year}
+TMDB：{tmdb_ref}
+分类：{category_tmdb}
+
+{title}
+简介：{tmdb_overview}
+分享：{uploader}
+大小：{size}
+
+<a href="{torrent_url}">{torrent_label}</a>`: TMDBTemplate,
 }
 
 // migrateLegacyTemplate upgrades a template still held verbatim from an
@@ -122,7 +152,8 @@ var TemplateFields = []struct{ Key, Desc string }{
 	{"{url}", "种子详情页的完整链接"},
 	{"{magnet}", "磁力链接，取不到时为空"},
 	{"{torrent_url}", "种子链接：磁力链接，取不到时退回详情页链接，永远可用"},
-	{"{torrent_label}", "配合 {torrent_url} 的文字，有磁力时为「种子链接」，否则为「详情页」"},
+	{"{torrent_text}", "配合 {torrent_url} 显示的文字：磁力链接本身（略去 tracker 参数，仍是可用的链接）或详情页链接"},
+	{"{torrent_label}", "指向同一个去向的文字版：「种子链接」或「详情页」，保留给旧模板"},
 	{"{id}", "ext.to 种子编号"},
 }
 
@@ -209,13 +240,18 @@ func Render(tpl string, d TemplateData) string {
 	// One link serves both cases. A magnet is what a reader actually wants, and
 	// the detail page is the honest fallback when none could be resolved: the
 	// magnet endpoint is per-page and a failure there must not leave a dead
-	// link in a published post. The label follows the destination so the caption
-	// never promises a magnet it does not have.
-	torrentURL, torrentLabel := d.Magnet, ""
+	// link in a published post.
+	//
+	// The two placeholders differ in what the caption shows, not in where the
+	// link goes. {torrent_text} prints the link itself, because a reader who
+	// forwards a caption carries the text and not the anchor; {torrent_label}
+	// names the destination in words and is kept for templates written against
+	// the earlier releases.
+	torrentURL, torrentText, torrentLabel := d.Magnet, d.Magnet, ""
 	if torrentURL == "" {
-		torrentURL, torrentLabel = d.URL, "详情页"
+		torrentURL, torrentText, torrentLabel = d.URL, d.URL, "详情页"
 	} else {
-		torrentLabel = "种子链接"
+		torrentText, torrentLabel = visibleMagnet(d.Magnet), "种子链接"
 	}
 	// Like the TMDB title, the classified name degrades to the tracker's own
 	// category rather than rendering an empty value, so a template using it
@@ -283,6 +319,7 @@ func Render(tpl string, d TemplateData) string {
 		"{url}", escape(d.URL),
 		"{magnet}", escape(d.Magnet),
 		"{torrent_url}", escape(torrentURL),
+		"{torrent_text}", escape(torrentText),
 		"{torrent_label}", escape(torrentLabel),
 		"{id}", fmt.Sprint(d.ID),
 	)
@@ -351,6 +388,33 @@ func isEmptyLabelLine(line string) bool {
 		return false
 	}
 	return !strings.ContainsAny(label, "<>")
+}
+
+// visibleMagnet returns the short form of a magnet link, for captions that
+// print the link as text rather than hiding it behind an anchor.
+//
+// A real ext.to magnet carries 24 to 25 trackers and runs to about 1140
+// characters, and Telegram counts the visible text of a caption against a 1024
+// limit (measured: the href is free, the text is not). Printing the whole
+// magnet is therefore rejected with "message caption is too long", so the text
+// keeps only the info hash, which is the part that identifies the torrent:
+// "magnet:?xt=urn:btih:449ffc…" is 60 characters and opens in every client,
+// while the trackers it drops are rediscovered over DHT and PEX.
+//
+// Everything else is left alone when there is no info hash to keep, because a
+// link that cannot be shortened is still better than a caption with no link in
+// it at all.
+func visibleMagnet(magnet string) string {
+	query, ok := strings.CutPrefix(magnet, "magnet:?")
+	if !ok {
+		return magnet
+	}
+	for _, param := range strings.FieldsFunc(query, func(r rune) bool { return r == '&' || r == ';' }) {
+		if strings.HasPrefix(param, "xt=") {
+			return "magnet:?" + param
+		}
+	}
+	return magnet
 }
 
 // humanCount renders a vote count compactly, for example 533052 -> "533k".
