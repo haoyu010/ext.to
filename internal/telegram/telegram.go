@@ -158,6 +158,54 @@ type Post struct {
 	Silent   bool
 	// DisableWebPreview suppresses link previews.
 	DisableWebPreview bool
+	// CopyText, when set, adds a button that puts this text on the reader's
+	// clipboard. It exists because Telegram refuses a magnet: URL as a
+	// hyperlink -- as an entity it is rejected with "Wrong port number
+	// specified in the URL", and in HTML the anchor is dropped silently -- so a
+	// button is the only control that can hand a magnet over intact.
+	//
+	// Telegram caps the text at 256 characters (measured: 257 is rejected with
+	// BUTTON_COPY_TEXT_INVALID), so the caller trims it to fit.
+	CopyText string
+}
+
+// copyButtonLabel is the button's caption. It names the action rather than the
+// payload, because the reader sees it before they see the link.
+const copyButtonLabel = "复制磁力链接"
+
+// copyTextButton is one inline keyboard button that copies text. The types are
+// named rather than inline because Go cannot express a recursive anonymous
+// struct: the rows and the buttons refer to each other.
+type copyTextButton struct {
+	Text     string       `json:"text"`
+	CopyText copyTextBody `json:"copy_text"`
+}
+
+type copyTextBody struct {
+	Text string `json:"text"`
+}
+
+type inlineKeyboard struct {
+	InlineKeyboard [][]copyTextButton `json:"inline_keyboard"`
+}
+
+// replyMarkup renders the inline keyboard, or an empty string when the post has
+// no button. It is built as JSON because reply_markup is a JSON-serialised
+// object in the Bot API, even for the URL-encoded endpoints.
+func replyMarkup(p Post) string {
+	if p.CopyText == "" {
+		return ""
+	}
+	markup := inlineKeyboard{InlineKeyboard: [][]copyTextButton{{
+		{Text: copyButtonLabel, CopyText: copyTextBody{Text: p.CopyText}},
+	}}}
+	b, err := json.Marshal(markup)
+	if err != nil {
+		// The struct is fixed, so this cannot happen; returning no button is
+		// still better than publishing a broken one.
+		return ""
+	}
+	return string(b)
 }
 
 // Send delivers a post, uploading a photo when one is attached.
@@ -182,15 +230,26 @@ func (c *Client) sendMessage(ctx context.Context, p Post) (*Message, error) {
 		"disable_web_page_preview": {boolStr(p.DisableWebPreview)},
 	}
 	addThread(form, p.ThreadID)
+	if markup := replyMarkup(p); markup != "" {
+		form.Set("reply_markup", markup)
+	}
 
 	var msg Message
 	err := c.call(ctx, "sendMessage", form, &msg)
-	if err != nil && isEntityError(err) {
-		// Retry without markup so the run continues.
-		form.Set("parse_mode", "")
-		var retry Message
-		if err2 := c.call(ctx, "sendMessage", form, &retry); err2 == nil {
-			return &retry, nil
+	if err != nil {
+		if isEntityError(err) {
+			form.Set("parse_mode", "")
+			var retry Message
+			if err2 := c.call(ctx, "sendMessage", form, &retry); err2 == nil {
+				return &retry, nil
+			}
+		}
+		if isEntityError(err) || isCopyTextError(err) {
+			form.Del("reply_markup")
+			var retry Message
+			if err2 := c.call(ctx, "sendMessage", form, &retry); err2 == nil {
+				return &retry, nil
+			}
 		}
 	}
 	if err != nil {
@@ -216,6 +275,9 @@ func (c *Client) sendPhoto(ctx context.Context, p Post, photo []byte, name strin
 	if p.ThreadID > 0 {
 		fields["message_thread_id"] = strconv.Itoa(p.ThreadID)
 	}
+	if markup := replyMarkup(p); markup != "" {
+		fields["reply_markup"] = markup
+	}
 	for k, v := range fields {
 		if err := mw.WriteField(k, v); err != nil {
 			return nil, err
@@ -237,35 +299,57 @@ func (c *Client) sendPhoto(ctx context.Context, p Post, photo []byte, name strin
 
 	var msg Message
 	err = c.callMultipart(ctx, "sendPhoto", mw.FormDataContentType(), buf.Bytes(), &msg)
-	if err != nil && isEntityError(err) {
-		// Caption markup was invalid; send the photo without a parse mode.
-		var buf2 bytes.Buffer
-		mw2 := multipart.NewWriter(&buf2)
-		fields["parse_mode"] = ""
-		for k, v := range fields {
-			if err := mw2.WriteField(k, v); err != nil {
-				return nil, err
+	if err != nil {
+		// Two parts of a photo post can be refused independently: the caption's
+		// markup, and the button's text. Each is dropped in turn, and the
+		// attempt that only has the harmless part removed is made first.
+		if isEntityError(err) {
+			fields["parse_mode"] = ""
+			if retry, ok := c.resendPhoto(ctx, fields, h, photo); ok {
+				return retry, nil
 			}
 		}
-		part, err := mw2.CreatePart(h)
-		if err != nil {
-			return nil, err
-		}
-		if _, err := part.Write(photo); err != nil {
-			return nil, err
-		}
-		if err := mw2.Close(); err != nil {
-			return nil, err
-		}
-		var retry Message
-		if err2 := c.callMultipart(ctx, "sendPhoto", mw2.FormDataContentType(), buf2.Bytes(), &retry); err2 == nil {
-			return &retry, nil
+		if isEntityError(err) || isCopyTextError(err) {
+			delete(fields, "reply_markup")
+			if retry, ok := c.resendPhoto(ctx, fields, h, photo); ok {
+				return retry, nil
+			}
 		}
 	}
 	if err != nil {
 		return nil, err
 	}
 	return &msg, nil
+}
+
+// resendPhoto rebuilds and resends a photo post with whatever fields it is
+// given. It reports whether the send produced a message.
+func (c *Client) resendPhoto(ctx context.Context, fields map[string]string,
+	h textproto.MIMEHeader, photo []byte) (*Message, bool) {
+
+	var buf bytes.Buffer
+	mw := multipart.NewWriter(&buf)
+	for k, v := range fields {
+		if err := mw.WriteField(k, v); err != nil {
+			return nil, false
+		}
+	}
+	part, err := mw.CreatePart(h)
+	if err != nil {
+		return nil, false
+	}
+	if _, err := part.Write(photo); err != nil {
+		return nil, false
+	}
+	if err := mw.Close(); err != nil {
+		return nil, false
+	}
+	var retry Message
+	if err := c.callMultipart(ctx, "sendPhoto", mw.FormDataContentType(),
+		buf.Bytes(), &retry); err != nil {
+		return nil, false
+	}
+	return &retry, true
 }
 
 // APIError is a structured Bot API failure.
@@ -368,6 +452,17 @@ func IsRateLimit(err error) bool {
 		return false
 	}
 	return ae.Code == http.StatusTooManyRequests || strings.Contains(ae.Description, "Too Many Requests")
+}
+
+// isCopyTextError detects a button whose text the Bot API would not take, which
+// happens when it exceeds the 256-character limit. The post is worth sending
+// without the button rather than not at all.
+func isCopyTextError(err error) bool {
+	var ae *APIError
+	if !errors.As(err, &ae) {
+		return false
+	}
+	return strings.Contains(strings.ToUpper(ae.Description), "BUTTON_COPY_TEXT_INVALID")
 }
 
 func addThread(form url.Values, id int) {

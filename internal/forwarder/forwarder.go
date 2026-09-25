@@ -449,12 +449,24 @@ func (f *Forwarder) publish(ctx context.Context, client *scrape.Client, tg *tele
 
 	photo := f.loadPoster(ctx, client, settings, it, detail, entry)
 
+	// The magnet goes on a copy button as well as into the caption, because
+	// Telegram will not accept a magnet: hyperlink: an anchor is dropped in
+	// HTML and rejected as an entity, so a reader cannot click through to a
+	// torrent the way they can with an https link. A button that copies the
+	// text is the one control that hands it over intact. The caption is what
+	// carries it visibly, so a post with no magnet simply has no button.
+	copyText := ""
+	if settings.WithMagnet && magnet != "" {
+		copyText = config.CopyMagnet(magnet)
+	}
+
 	_, err := tg.Send(ctx, telegram.Post{
 		ChatID:            settings.ChatID,
 		ThreadID:          threadID,
 		Caption:           caption,
 		Silent:            settings.Silent,
 		DisableWebPreview: settings.DisableWeb,
+		CopyText:          copyText,
 	}, photo, posterName(it))
 	if err != nil {
 		return err

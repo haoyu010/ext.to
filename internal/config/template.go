@@ -46,6 +46,91 @@ const (
 	overviewStep = 40
 )
 
+// magnetUnsafe lists the characters that cannot appear unescaped inside a URI.
+//
+// They matter because ext.to puts the release name straight into the magnet's
+// dn parameter, and a release name is full of them: "The Taking of Tiger
+// Mountain 2014 m720p BluRay x264-GeneMige [ UIndex.org ]" carries spaces and
+// brackets. A URI with a raw space is malformed, and a client that parses it
+// strictly -- a cloud download service among them -- refuses it or stops at the
+// space, which is why such a link "does not work" even though it looks right.
+//
+// Measured on the deployed install: all 25 of the magnets it held that carried
+// a dn carried raw spaces, 13 of them also carried brackets, and one carried a
+// raw "&" that split the release name into a nonsense parameter of its own.
+//
+// "%" is deliberately absent: it is only unsafe when it does not begin an
+// escape, and encoding it would corrupt a value the site had already encoded.
+const magnetUnsafe = " <>\"#[]\\^`{|}"
+
+// copyTextLimit is the longest string a copy_text button will carry. Measured
+// against the live Bot API: 256 characters is accepted, and 257 comes back as
+// BUTTON_COPY_TEXT_INVALID.
+//
+// The limit is a third of what a caption holds, so a magnet long enough to fill
+// a caption cannot be handed over whole by a button. The button therefore
+// carries the longest prefix that still ends on a parameter boundary, and the
+// caption carries the rest.
+const copyTextLimit = 256
+
+// CleanMagnet returns a magnet link as a legal URI, which is what a strict
+// parser -- Telegram's own link detector, and the cloud download services this
+// project's posts are read with -- needs to make sense of it.
+//
+// The repair is confined to parameter values: "&" and "=" separate parameters,
+// so encoding them would merge two parameters into one. A fragment with no "="
+// at all cannot be a parameter, and is dropped; that is the shape the site's own
+// escaping bug produces when a release name carries a raw "&", and keeping it
+// would publish a URI whose parameter names are release-name prose.
+//
+// A link that needs no repair is returned byte for byte, so an install whose
+// magnets are already clean is unaffected.
+func CleanMagnet(magnet string) string {
+	const scheme = "magnet:?"
+	if !strings.HasPrefix(magnet, scheme) {
+		return magnet
+	}
+	params := strings.Split(magnet[len(scheme):], "&")
+	kept := make([]string, 0, len(params))
+	for _, p := range params {
+		name, value, ok := strings.Cut(p, "=")
+		if !ok || name == "" {
+			continue
+		}
+		kept = append(kept, name+"="+encodeURIValue(value))
+	}
+	// A link whose every parameter was junk is returned as it came in: mangling
+	// it further would only make the failure harder to see.
+	if len(kept) == 0 {
+		return magnet
+	}
+	return scheme + strings.Join(kept, "&")
+}
+
+// CopyMagnet returns the magnet a copy_text button should carry: clean, and cut
+// to what a button accepts on a parameter boundary, so the reader gets a link a
+// client can act on rather than a string cut mid-URL.
+func CopyMagnet(magnet string) string {
+	return trimMagnet(CleanMagnet(magnet), copyTextLimit)
+}
+
+// encodeURIValue percent-encodes the characters a URI cannot carry unescaped.
+func encodeURIValue(v string) string {
+	if !strings.ContainsAny(v, magnetUnsafe) {
+		return v
+	}
+	var b strings.Builder
+	b.Grow(len(v) + 8)
+	for _, r := range v {
+		if strings.ContainsRune(magnetUnsafe, r) {
+			fmt.Fprintf(&b, "%%%02X", r)
+			continue
+		}
+		b.WriteRune(r)
+	}
+	return b.String()
+}
+
 // DefaultTemplate is the caption used for new installs. It is rendered as
 // Telegram HTML, so only <b>, <i>, <a>, <code> and <pre> tags are allowed.
 //
@@ -54,14 +139,20 @@ const (
 // with nothing after it is still readable, while a row of two values joined by
 // a separator leaves a stray bullet when one of them is empty.
 //
-// The single link is the torrent itself, not the tracker's detail page. The
-// detail page is a web page nobody wants mid-download, and {torrent_url}
+// The link line is the torrent itself, not the tracker's detail page. The
+// detail page is a web page nobody wants mid-download, and {torrent_text}
 // already falls back to it when no magnet could be resolved, so the line never
 // becomes a dead link.
 //
 // Its text is the link itself rather than the words "种子链接": a reader
 // copies a caption by copying text, and the words are worth nothing once the
 // message has been forwarded somewhere the anchor no longer renders.
+//
+// There is deliberately no <a> around it. Telegram accepts no magnet: URL as a
+// hyperlink, so an anchor here would be dropped and would only make the caption
+// look like it points somewhere. {torrent_text} supplies its own <code> when it
+// holds a magnet, which Telegram clients copy on a tap, and none when it holds
+// the detail page, whose URL Telegram linkifies by itself.
 //
 // Printing the link means carrying its trackers, because a magnet without one
 // is the info hash and nothing else: a torrent client can still use it, but a
@@ -74,7 +165,7 @@ const DefaultTemplate = `名称：{title}
 做种：{seeds} · 下载：{leeches}
 发布：{age}
 
-<a href="{torrent_url}">{torrent_text}</a>`
+直达链接：{torrent_text}`
 
 // TMDBTemplate is an optional caption preset that leads with the matched TMDB
 // entry. It is offered in the dashboard rather than applied by default, because
@@ -83,7 +174,8 @@ const DefaultTemplate = `名称：{title}
 // The TMDB reference is plain text rather than a link: the entry's own page is
 // a detour for a reader who came for the torrent, and the type and number
 // already identify it unambiguously ("tv/287994"). The one link in the caption
-// is the torrent.
+// is the torrent, and it is printed as text for the reason DefaultTemplate
+// gives.
 //
 // {title} on its own line is the release name as published. It is kept beside
 // the TMDB fields because the two answer different questions: the TMDB lines
@@ -99,7 +191,7 @@ TMDB：{tmdb_ref}
 分享：{uploader}
 大小：{size}
 
-<a href="{torrent_url}">{torrent_text}</a>`
+直达链接：{torrent_text}`
 
 // legacyTemplates are the presets this project shipped before the torrent link
 // was introduced, kept so an existing install can be moved onto the current
@@ -118,6 +210,12 @@ TMDB：{tmdb_ref}
 //
 // The two oldest pairs also carry the presets that replaced them, so an
 // install coming from 1.2.x lands on the 1.3.2 wording in one step.
+//
+// The 1.3.3 presets are here for the same reason one release later: they
+// wrapped the torrent in an anchor, which Telegram drops for a magnet, so an
+// install that never edited its caption would keep a line whose link goes
+// nowhere. Again the wording of the migration is the same: only a verbatim
+// preset moves.
 var legacyTemplates = map[string]string{
 	`<b>{title}</b>
 
@@ -154,6 +252,24 @@ TMDB：{tmdb_ref}
 大小：{size}
 
 <a href="{torrent_url}">{torrent_label}</a>`: TMDBTemplate,
+	`名称：{title}
+分类：{category}
+大小：{size} · {files} 个文件
+做种：{seeds} · 下载：{leeches}
+发布：{age}
+
+<a href="{torrent_url}">{torrent_text}</a>`: DefaultTemplate,
+	`片名：{tmdb_title}{season_label}
+年份：{tmdb_year}
+TMDB：{tmdb_ref}
+分类：{category_tmdb}
+
+{title}
+简介：{tmdb_overview}
+分享：{uploader}
+大小：{size}
+
+<a href="{torrent_url}">{torrent_text}</a>`: TMDBTemplate,
 }
 
 // migrateLegacyTemplate upgrades a template still held verbatim from an
@@ -194,9 +310,9 @@ var TemplateFields = []struct{ Key, Desc string }{
 	{"{source}", "来源站点，例如 DHT 或 UIndex"},
 	{"{uploader}", "ext.to 给出的发布者"},
 	{"{url}", "种子详情页的完整链接"},
-	{"{magnet}", "磁力链接，取不到时为空"},
-	{"{torrent_url}", "种子链接：磁力链接，取不到时退回详情页链接，永远可用"},
-	{"{torrent_text}", "配合 {torrent_url} 显示的文字：整条磁力链接本身（含 tracker），放不下时先缩简介、再从尾部丢 tracker，必要时退回详情页链接"},
+	{"{magnet}", "磁力链接（已修正站点写在 dn 里的非法字符），取不到时为空"},
+	{"{torrent_url}", "种子链接的去向：磁力链接，取不到时退回详情页链接，永远可用。只适合放进 href，不能直接显示"},
+	{"{torrent_text}", "直接显示的种子链接：磁力会自动套上 <code>（可点击复制，转发后也不丢），放不下时先缩简介、再从尾部丢 tracker，取不到磁力时退回详情页链接"},
 	{"{torrent_label}", "指向同一个去向的文字版：「种子链接」或「详情页」，保留给旧模板"},
 	{"{id}", "ext.to 种子编号"},
 }
@@ -281,6 +397,12 @@ func Render(tpl string, d TemplateData) string {
 	if d.TMDBID != 0 {
 		tmdbRef = fmt.Sprintf("%s/%d", d.TMDBType, d.TMDBID)
 	}
+	// The magnet is repaired before anything measures or prints it, because the
+	// site writes the release name into dn verbatim: a raw space there makes the
+	// URI malformed, and a strict parser -- Telegram's own link detector, and
+	// the cloud download services these posts are read with -- stops at it.
+	magnet := CleanMagnet(d.Magnet)
+
 	// One link serves both cases. A magnet is what a reader actually wants, and
 	// the detail page is the honest fallback when none could be resolved: the
 	// magnet endpoint is per-page and a failure there must not leave a dead
@@ -291,11 +413,28 @@ func Render(tpl string, d TemplateData) string {
 	// forwards a caption carries the text and not the anchor; {torrent_label}
 	// names the destination in words and is kept for templates written against
 	// the earlier releases.
-	torrentURL, torrentText, torrentLabel := d.Magnet, d.Magnet, ""
-	if torrentURL == "" {
-		torrentURL, torrentText, torrentLabel = d.URL, d.URL, "详情页"
+	//
+	// Telegram will not accept a magnet: hyperlink: as an entity it is rejected
+	// ("Wrong port number specified in the URL") and as HTML it is dropped
+	// silently, leaving the label as plain text. What it does keep is a <code>
+	// span, which clients copy on a tap and which stops a fragment of the link
+	// -- "UIndex.org", out of a release name in dn -- from being turned into a
+	// link of its own. A magnet is therefore printed inside <code>, and the
+	// anchor around it is harmless: Telegram drops the href and keeps the span.
+	//
+	// The detail page is the opposite case and must stay a real link, so it is
+	// printed bare: Telegram linkifies a bare https URL on its own, while an
+	// anchor wrapping a <code> span loses its href altogether (measured).
+	var torrentURL, torrentText, torrentLabel, torrentHTML string
+	if magnet != "" {
+		torrentURL, torrentText, torrentLabel = magnet, magnet, "种子链接"
+		torrentHTML = "<code>" + escape(magnet) + "</code>"
 	} else {
-		torrentLabel = "种子链接"
+		torrentURL, torrentText = d.URL, d.URL
+		torrentHTML = escape(d.URL)
+		if d.URL != "" {
+			torrentLabel = "详情页"
+		}
 	}
 	// Like the TMDB title, the classified name degrades to the tracker's own
 	// category rather than rendering an empty value, so a template using it
@@ -374,7 +513,7 @@ func Render(tpl string, d TemplateData) string {
 			"{source}", escape(d.Source),
 			"{uploader}", escape(d.Uploader),
 			"{url}", escape(d.URL),
-			"{magnet}", escape(d.Magnet),
+			"{magnet}", escape(magnet),
 			"{torrent_url}", escape(torrentURL),
 			"{torrent_text}", torrentTextSentinel,
 			"{torrent_label}", escape(torrentLabel),
@@ -407,7 +546,7 @@ func Render(tpl string, d TemplateData) string {
 			caption := render(ovCap)
 			rest := strings.ReplaceAll(caption, torrentTextSentinel, "")
 			if room := captionLimit - visibleLen(rest); visibleLen(torrentText) <= room {
-				out = strings.ReplaceAll(caption, torrentTextSentinel, escape(torrentText))
+				out = strings.ReplaceAll(caption, torrentTextSentinel, torrentHTML)
 				break
 			}
 		}
@@ -420,10 +559,21 @@ func Render(tpl string, d TemplateData) string {
 			if room < 0 {
 				room = 0
 			}
-			out = strings.ReplaceAll(caption, torrentTextSentinel, escape(trimMagnet(torrentText, room)))
+			trimmed := trimMagnet(torrentText, room)
+			out = strings.ReplaceAll(caption, torrentTextSentinel, wrapTorrent(trimmed, magnet))
 		}
 	}
 	return clampVisible(out, captionLimit)
+}
+
+// wrapTorrent renders a possibly trimmed magnet the way the caption prints it:
+// inside <code> when it is the magnet that was resolved, and bare when it is the
+// detail-page fallback, whose link Telegram has to keep working.
+func wrapTorrent(text, magnet string) string {
+	if magnet == "" {
+		return escape(text)
+	}
+	return "<code>" + escape(text) + "</code>"
 }
 
 // overviewBudgets lists the synopsis lengths to try, longest first. Each step is

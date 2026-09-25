@@ -854,14 +854,29 @@
             <button class="btn" id="btnUseTmdb" type="button">TMDB 模板</button>
           </div>
           <p class="hint">
-            种子链接请用 <span class="kbd">&lt;a href="{torrent_url}"&gt;{torrent_text}&lt;/a&gt;</span>：
-            <span class="kbd">{torrent_url}</span> 是链接的去向，优先填磁力链接，取不到磁力时自动退回详情页链接，所以永远可用；
-            <span class="kbd">{torrent_text}</span> 是显示出来的文字，直接印出链接本身，转发到别处也不会丢。
-            详情页链接是 <span class="kbd">{url}</span>，磁力链接单独取是 <span class="kbd">{magnet}</span>（取不到时为空）。
+            种子链接<b>直接写</b> <span class="kbd">{torrent_text}</span> 就行，
+            <b>不要</b>再套 <span class="kbd">&lt;a&gt;</span>：
+            Telegram 不接受 <span class="kbd">magnet:</span> 开头的超链接 —— 写成 HTML 锚点会被静默丢掉，写成 entity 会被拒
+            （<span class="kbd">Wrong port number specified in the URL</span>），
+            所以套上锚点只会让正文看起来像能点，其实点不开。
+            另外磁力链接会顺带放进消息下方的「复制磁力链接」按钮，读者点一下就能拿到完整链接。
+            <span class="kbd">{torrent_url}</span> 仍是链接的去向（磁力优先，取不到磁力时退回详情页），但它只适合放进
+            <span class="kbd">href</span>、不适合直接显示。详情页链接是 <span class="kbd">{url}</span>。
           </p>
            <p class="hint">
             <span class="kbd">{torrent_text}</span> 印出的是<b>完整磁力链接</b>，tracker 一个都不丢：只有 info hash 的链接，
             BT 客户端靠 DHT 还能开，但网盘离线下载不行 —— 它找不到 peer，只会把那串 hash 当文件名显示出来。
+          </p>
+          <p class="hint">
+            站点把发布名原样写进磁力的 <span class="kbd">dn</span> 里，而发布名带空格和方括号，这样的 URI 是非法的：
+            严格解析的下载器读到第一个空格就停，于是「明明看着像链接却用不了」。本程序会把 <span class="kbd">dn</span>
+            里的非法字符转义还原成合法 URL（并且逐条实测过能解析出完整发布名）。
+          </p>
+          <p class="hint">
+            <span class="kbd">{torrent_text}</span> 里的磁力会套上 <span class="kbd">&lt;code&gt;</span>：
+            Telegram 客户端点一下即可复制，而且能挡住「<span class="kbd">UIndex.org</span>」这类夹杂在磁力里的字样被自动识别成蓝色链接。
+            取不到磁力时退回详情页链接，此时是<b>裸链接</b>——实测把 <span class="kbd">&lt;code&gt;</span>
+            套在锚点里会连锚点一起失效，而裸 https 链接 Telegram 会自己识别。
           </p>
           <p class="hint">
             Telegram 的图片说明上限是 <span class="kbd">1024</span> 个字符，且只算<b>看得见的文字</b>：链接的去向（<span class="kbd">href</span>）不计，
@@ -869,8 +884,10 @@
             而站点给出的磁力实测 <span class="kbd">331 ~ 1188</span> 字符，未必都放得下，所以渲染时会按顺序让步：
             先缩 <span class="kbd">{tmdb_overview}</span>（320 字起，每 40 字一档，让到 0 就整行去掉，不会只剩一个冒号）；
             还不够才从链接尾部丢 tracker，一次丢一整个参数，绝不切在 URL 中间，<span class="kbd">info hash</span> 永远保留。
-            <span class="kbd">{torrent_url}</span> 里始终是完整链接，所以文字被缩过也照样能连上全部 tracker。
-            <span class="kbd">{magnet}</span> 同样是完整磁力，但它超过上限、带海报时会被 Telegram 拒收，请仅用于 <span class="kbd">href</span>。
+            正文里的链接若被缩过，就是在<b>整段简介让光之后</b>仍然放不下，此时只能牺牲末尾的 tracker。
+            <span class="kbd">{magnet}</span> 也是完整磁力，但它超过上限、带海报时会被 Telegram 拒收，别直接放进正文做显示。
+            下方的复制按钮另有一份：它最多 256 个字符（实测 257 就被 Telegram 拒），所以固定带上
+            <span class="kbd">info hash</span> 和尽量多的 tracker，末尾同样不切在 URL 中间。
             <span class="kbd">{torrent_label}</span> 是旧模板用的文字版（「种子链接」/「详情页」），仍然可用，但转发后只剩那几个字。
           </p>
           <p class="hint">
@@ -901,7 +918,7 @@
               </label>
               <label class="check">
                 <input type="checkbox" id="setMagnet">
-                <span class="t"><b>附带磁力链接</b><small>从详情页实时获取签名磁力链接，供 <span class="kbd">{magnet}</span>、<span class="kbd">{torrent_url}</span> 与 <span class="kbd">{torrent_text}</span> 使用；取不到磁力时后两者退回详情页链接，推送不会失败。</small></span>
+                <span class="t"><b>附带磁力链接</b><small>从详情页实时获取签名磁力链接，供 <span class="kbd">{magnet}</span>、<span class="kbd">{torrent_url}</span> 与 <span class="kbd">{torrent_text}</span> 使用，并在消息下方加一个「复制磁力链接」按钮；取不到磁力时正文退回详情页链接、按钮自动省略，推送不会失败。</small></span>
               </label>
             </div>
             <div>

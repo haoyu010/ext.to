@@ -240,6 +240,25 @@ func TestPublishSendsPhotoWithCaptionAndMagnet(t *testing.T) {
 	if !strings.Contains(caption, "1.5 GB") {
 		t.Errorf("caption should contain the size: %q", caption)
 	}
+	// The magnet goes on a copy button too. Telegram will not accept a magnet:
+	// hyperlink, so a button that copies the text is the only control that hands
+	// it over, and the caption alone cannot: a forwarded caption carries the text
+	// but a reader has to select it by hand.
+	markup := rec.form["reply_markup"]
+	if markup == "" {
+		t.Fatal("the post carried no copy button for its magnet")
+	}
+	if !strings.Contains(markup, "copy_text") {
+		t.Errorf("the button does not copy anything: %q", markup)
+	}
+	if !strings.Contains(markup, "magnet:?xt=urn:btih:DEADBEEF") {
+		t.Errorf("the button does not carry the magnet: %q", markup)
+	}
+	// The button is a link, not a description of one: it has to stay within what
+	// the Bot API accepts, and it must be a magnet rather than the detail page.
+	if strings.Contains(markup, "/torrent-page/") {
+		t.Errorf("the button copied the detail page instead of the magnet: %q", markup)
+	}
 
 	recs := state.Recent(10, "sent")
 	if len(recs) != 1 || recs[0].ID != item.ID {

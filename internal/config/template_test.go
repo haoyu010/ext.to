@@ -133,34 +133,48 @@ func TestRenderDropsEmptyLabelLines(t *testing.T) {
 // The text is the link itself, trackers and all: a magnet without a tracker is
 // the info hash alone, which a torrent client can still open but a cloud
 // download service cannot -- it shows the hash where the file names should be.
+//
+// A magnet is printed inside <code> and a detail page is printed bare, because
+// Telegram treats the two differently: it accepts no magnet: URL as a hyperlink
+// at all, while a bare https URL is linkified by Telegram itself. The two were
+// measured against the live Bot API, and so was the trap in between: an anchor
+// wrapping a <code> span loses its href even for an https URL, which is why the
+// detail page is never wrapped.
 func TestRenderTorrentLinkFallsBackToDetailPage(t *testing.T) {
 	magnet := "magnet:?xt=urn:btih:DEADBEEF&tr=udp%3A%2F%2Ft.example%3A6969"
-	got := Render("<a href=\"{torrent_url}\">{torrent_text}</a>", TemplateData{
+	got := Render("{torrent_text}", TemplateData{
 		Magnet: magnet, URL: "https://ext.to/y-11/",
 	})
-	if want := `<a href="` + escape(magnet) + `">` + escape(magnet) + `</a>`; got != want {
+	if want := `<code>` + escape(magnet) + `</code>`; got != want {
 		t.Errorf("Render =\n  %q\nwant\n  %q", got, want)
 	}
+	// The magnet is a legal URI: what the site hands over is not, because the
+	// release name in dn carries raw spaces.
+	if strings.Contains(got, " ") {
+		t.Errorf("the printed magnet still holds a raw space: %q", got)
+	}
 
-	got = Render("<a href=\"{torrent_url}\">{torrent_text}</a>", TemplateData{
+	got = Render("{torrent_text}", TemplateData{
 		URL: "https://ext.to/y-11/",
 	})
-	if want := `<a href="https://ext.to/y-11/">https://ext.to/y-11/</a>`; got != want {
+	// Bare, so Telegram linkifies it: an anchor around a <code> span would lose
+	// the href, and the fallback link has to keep working.
+	if want := "https://ext.to/y-11/"; got != want {
 		t.Errorf("without a magnet the caption should show the detail page: %q", got)
 	}
 	if strings.Contains(got, "magnet") {
 		t.Errorf("no magnet was available, so none may be advertised: %q", got)
 	}
 
-	// Neither a magnet nor a detail page: the whole line has to go. Publishing
-	// "<a href=\"\"></a>" would be a dead link in a sent message.
-	if got := Render("正文\n<a href=\"{torrent_url}\">{torrent_text}</a>", TemplateData{}); got != "正文" {
+	// Neither a magnet nor a detail page: the whole line has to go. A caption
+	// reading "直达链接：" with nothing after it promises a link it does not have.
+	if got := Render("正文\n直达链接：{torrent_text}", TemplateData{}); got != "正文" {
 		t.Errorf("a link with no destination was published: %q", got)
 	}
 	// A line that pairs the link with other text is content, not a bare link,
 	// and must be left for the operator to decide about.
-	kept := Render("正文\n<a href=\"{torrent_url}\">{torrent_text}</a> · {size}", TemplateData{Size: "1 GB"})
-	if !strings.Contains(kept, "· 1 GB") || !strings.Contains(kept, `href=""`) {
+	kept := Render("正文\n直达链接：{torrent_text} · {size}", TemplateData{Size: "1 GB"})
+	if !strings.Contains(kept, "· 1 GB") {
 		t.Errorf("a link line carrying other text was not left alone: %q", kept)
 	}
 }
@@ -173,11 +187,15 @@ func TestRenderTorrentLabelNamesTheDestination(t *testing.T) {
 	got := Render("{torrent_label}|{torrent_text}", TemplateData{
 		Magnet: magnet,
 	})
-	if want := "种子链接|" + escape(magnet); got != want {
+	if want := "种子链接|<code>" + escape(magnet) + `</code>`; got != want {
 		t.Errorf("Render = %q, want %q", got, want)
 	}
 	if got := Render("{torrent_label}", TemplateData{URL: "https://ext.to/y-11/"}); got != "详情页" {
 		t.Errorf("without a magnet the label should say 详情页: %q", got)
+	}
+	// With neither, the label must not name a destination that does not exist.
+	if got := Render("{torrent_label}", TemplateData{}); got != "" {
+		t.Errorf("a label with nothing to point at was published: %q", got)
 	}
 }
 
@@ -292,6 +310,22 @@ func TestLegacyTemplateMigratesOnlyWhenUntouched(t *testing.T) {
 		t.Errorf("the 1.3.1 TMDB preset was not migrated:\n%q", got)
 	}
 
+	// The 1.3.2 / 1.3.3 presets printed the link but wrapped it in an anchor,
+	// and Telegram drops a magnet anchor: the caption looked like it pointed
+	// somewhere and did not. An install carrying them verbatim must move on.
+	oldDefault133 := "名称：{title}\n分类：{category}\n大小：{size} · {files} 个文件\n" +
+		"做种：{seeds} · 下载：{leeches}\n发布：{age}\n\n" +
+		`<a href="{torrent_url}">{torrent_text}</a>`
+	if got := migrateLegacyTemplate(oldDefault133); got != DefaultTemplate {
+		t.Errorf("the 1.3.2 default preset was not migrated:\n%q", got)
+	}
+	oldTmdb133 := "片名：{tmdb_title}{season_label}\n年份：{tmdb_year}\nTMDB：{tmdb_ref}\n" +
+		"分类：{category_tmdb}\n\n{title}\n简介：{tmdb_overview}\n分享：{uploader}\n大小：{size}\n\n" +
+		`<a href="{torrent_url}">{torrent_text}</a>`
+	if got := migrateLegacyTemplate(oldTmdb133); got != TMDBTemplate {
+		t.Errorf("the 1.3.2 TMDB preset was not migrated:\n%q", got)
+	}
+
 	// An edited template stays as written, even one that began as a preset.
 	mine := old + "\n我自己加的一行"
 	if got := migrateLegacyTemplate(mine); got != mine {
@@ -306,29 +340,30 @@ func TestLegacyTemplateMigratesOnlyWhenUntouched(t *testing.T) {
 	}
 }
 
-// The shipped presets must link the torrent rather than the tracker page, and
+// The shipped presets must print the torrent rather than the tracker page, and
 // must not leave a dead link when no magnet could be resolved. The link is
 // printed as text, so a forwarded caption still carries something usable.
+//
+// They must not wrap it in an anchor: Telegram accepts no magnet: URL as a
+// hyperlink, so the anchor would be dropped and the caption would only look like
+// it points somewhere.
 func TestShippedTemplatesLinkTheTorrent(t *testing.T) {
 	for name, tpl := range map[string]string{"DefaultTemplate": DefaultTemplate, "TMDBTemplate": TMDBTemplate} {
-		if !strings.Contains(tpl, "{torrent_url}") {
-			t.Errorf("%s does not link the torrent", name)
-		}
 		if !strings.Contains(tpl, "{torrent_text}") {
 			t.Errorf("%s does not print the link, so a forwarded caption loses it", name)
 		}
 		if strings.Contains(tpl, "{torrent_label}") {
 			t.Errorf("%s still shows the words instead of the link", name)
 		}
-		if strings.Contains(tpl, `href="{url}"`) {
-			t.Errorf("%s links the detail page where the torrent is expected", name)
+		if strings.Contains(tpl, `href="{torrent_url}"`) || strings.Contains(tpl, `href="{url}"`) {
+			t.Errorf("%s wraps the torrent in an anchor, which Telegram drops for a magnet", name)
 		}
 		out := Render(tpl, TemplateData{
 			Title: "某片 2026", Size: "1.43 GB", Magnet: "magnet:?xt=urn:btih:DEADBEEF",
 			TMDBTitle: "某片", TMDBYear: 2026, TMDBID: 287994, TMDBType: "tv",
 		})
-		if want := `<a href="magnet:?xt=urn:btih:DEADBEEF">magnet:?xt=urn:btih:DEADBEEF</a>`; !strings.Contains(out, want) {
-			t.Errorf("%s did not render the magnet as text:\n%s", name, out)
+		if want := `<code>magnet:?xt=urn:btih:DEADBEEF</code>`; !strings.Contains(out, want) {
+			t.Errorf("%s did not render the magnet as a copyable span:\n%s", name, out)
 		}
 	}
 }
@@ -368,7 +403,7 @@ func TestShippedTemplateFitsTheCaptionLimit(t *testing.T) {
 		}
 		// The link is printed, and printed with its trackers: dropping them
 		// leaves the info hash, which a cloud download service cannot use.
-		if !strings.Contains(out, ">magnet:?xt=urn:btih:"+strings.Repeat("a", 40)+"&amp;tr=") {
+		if !strings.Contains(out, "<code>magnet:?xt=urn:btih:"+strings.Repeat("a", 40)+"&amp;tr=") {
 			t.Errorf("%s did not print the magnet with its trackers:\n%s", name, out)
 		}
 	}
@@ -387,10 +422,10 @@ func TestWholeMagnetIsPrintedWhenItFits(t *testing.T) {
 	if !strings.Contains(out, escape(magnet)) {
 		t.Errorf("the magnet was not printed in full:\n%s", out)
 	}
-	// The link appears twice -- once as the destination, once as the text -- so
-	// three trackers mean six occurrences in the raw caption.
-	if n := strings.Count(out, "&amp;tr="); n != 6 {
-		t.Errorf("printed %d tracker references, want 6 (3 in the link, twice):\n%s", n, out)
+	// The link is printed once, as the text a reader copies: there is no anchor
+	// for it to be duplicated into, because Telegram drops a magnet anchor.
+	if n := strings.Count(out, "&amp;tr="); n != 3 {
+		t.Errorf("printed %d tracker references, want 3 (once, as text):\n%s", n, out)
 	}
 }
 
