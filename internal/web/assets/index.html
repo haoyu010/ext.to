@@ -483,6 +483,7 @@
             <div class="metric"><div class="k">已推送</div><div class="v" id="lrSent">0</div></div>
             <div class="metric"><div class="k">跳过</div><div class="v" id="lrSkipped">0</div></div>
             <div class="metric"><div class="k">失败</div><div class="v" id="lrFailed">0</div></div>
+            <div class="metric"><div class="k">更新 Cookie</div><div class="v" id="lrRefreshed">0</div></div>
           </div>
           <div class="warnbox" id="lrErr" hidden></div>
         </div>
@@ -592,8 +593,39 @@
           <label class="field">
             <span class="lbl">User-Agent</span>
             <input type="text" id="setUA">
-            <span class="help">必须与获取 cookie 时使用的浏览器一致。</span>
+            <span class="help">必须与获取 cookie 时使用的浏览器一致；自动刷新会把它同步成解题浏览器的值。</span>
           </label>
+        </div>
+
+        <div class="card">
+          <div class="cardhead">
+            <h3>自动获取 Cookie</h3>
+            <div class="grow"></div>
+            <span class="pill"><span class="dot" id="solverDot"></span><span id="solverText">—</span></span>
+          </div>
+          <p class="hint">
+            cf_clearance 会自己过期，也可能被 Cloudflare 提前吊销。这里填一个
+            FlareSolverr 边车地址后，扫描一旦被拦就会自动重新解题、写入新 cookie 并重试当前请求，
+            不需要再手动从浏览器里复制；面板上也能随时点「立即获取」。
+            重点：cookie 绑定出口 IP，边车容器必须和本程序在同一台机器上（所以 compose 里它们在同一份文件里）。
+          </p>
+          <div class="row">
+            <label class="field">
+              <span class="lbl">FlareSolverr 地址</span>
+              <input type="text" id="setSolverURL" placeholder="http://flaresolverr:8191/v1">
+              <span class="help">默认 <span class="kbd">http://flaresolverr:8191/v1</span>，即 compose 里的服务名。</span>
+            </label>
+            <div>
+              <label class="check">
+                <input type="checkbox" id="setAutoRefresh">
+                <span class="t"><b>自动刷新 Cookie</b><small>被 Cloudflare 拦下时自动重新获取，并重试当前这一条请求。</small></span>
+              </label>
+            </div>
+          </div>
+          <div class="actions">
+            <button class="btn" id="btnSolveCookie" type="button">立即获取</button>
+          </div>
+          <p class="muted-note" id="solverNote">—</p>
         </div>
 
         <div class="card">
@@ -1161,6 +1193,8 @@ function fillSettings(s) {
   $("setSession").value = s.session || "";
   $("setProxy").value = s.proxy || "";
   $("setUA").value = s.user_agent || "";
+  $("setSolverURL").value = s.solver_url || "";
+  $("setAutoRefresh").checked = !!s.auto_refresh_clearance;
   $("setBotToken").value = s.bot_token || "";
   $("setChatID").value = s.chat_id || "";
   $("setTopic").value = s.message_topic || "";
@@ -1181,6 +1215,21 @@ function fillSettings(s) {
 
   $("sTelegram").textContent = s.bot_token ? "已配置" : "未配置";
   $("sTMDB").textContent = s.tmdb_key ? (s.tmdb_lang || "zh-CN") : "未配置";
+  renderSolver(s);
+}
+
+// renderSolver states whether the automatic cookie refresh is usable, so an
+// operator can tell "the sidecar is missing" apart from "the cookie expired".
+function renderSolver(s) {
+  const url = (s.solver_url || "").trim();
+  const on = !!s.auto_refresh_clearance;
+  $("solverDot").className = "dot " + (url && on ? "on" : "off");
+  $("solverText").textContent = !url ? "未配置" : (on ? "已开启" : "已关闭");
+  $("solverNote").textContent = !url
+    ? "未填写地址，不会自动获取；cookie 过期后需要手动粘贴。"
+    : (on
+      ? "被拦下时会自动重新获取并重试，无需人工干预。"
+      : "地址已填写但开关关闭，cookie 过期后需要点「立即获取」或手动粘贴。");
 }
 
 function splitLines(v) {
@@ -1197,6 +1246,8 @@ function collectSettings() {
     session: $("setSession").value,
     user_agent: $("setUA").value,
     proxy: $("setProxy").value,
+    solver_url: $("setSolverURL").value.trim(),
+    auto_refresh_clearance: $("setAutoRefresh").checked,
     categories: cats,
     age: Number($("setAge").value),
     include: splitLines($("setInclude").value),
@@ -1264,6 +1315,7 @@ function renderState(st) {
   $("lrSent").textContent = last.sent ?? 0;
   $("lrSkipped").textContent = last.skipped ?? 0;
   $("lrFailed").textContent = last.failed ?? 0;
+  $("lrRefreshed").textContent = last.refreshed ?? 0;
 
   const err = (last.errors && last.errors.length) ? last.errors.join("\n") : (stats.last_error || "");
   $("lrErr").hidden = !err;
@@ -1426,6 +1478,29 @@ async function testTelegram(btn) {
     else toast("Telegram 测试失败", (d.error || "") + (d.detail ? "\n" + d.detail : ""), "err");
   } catch (e) {
     toast("Telegram 测试失败", e.message, "err");
+  } finally {
+    setBusy(btn, false);
+  }
+}
+
+// solveCookie refreshes cf_clearance on demand. The address and the switch are
+// saved first, because the server solves with what is stored: testing unsaved
+// values would report a result that the next scan would not reproduce.
+async function solveCookie(btn) {
+  setBusy(btn, true, "获取中…");
+  try {
+    const d = await api("PUT", "/api/settings", collectSettings());
+    fillSettings(d.settings || {});
+    const r = await api("POST", "/api/solve-cookie");
+    if (r.ok) {
+      if (r.settings) fillSettings(r.settings);
+      toast("已获取新 Cookie", r.detail || "", "ok");
+      await loadLogs().catch(() => {});
+    } else {
+      toast("获取失败", r.error || "未知错误", "err");
+    }
+  } catch (e) {
+    toast("获取失败", e.message, "err");
   } finally {
     setBusy(btn, false);
   }
@@ -1597,6 +1672,7 @@ function wire() {
   $("btnTestTg").onclick = (e) => testTelegram(e.target);
   $("btnTg2").onclick = (e) => testTelegram(e.target);
   $("btnTestTmdb").onclick = (e) => testTMDB(e.target);
+  $("btnSolveCookie").onclick = (e) => solveCookie(e.target);
   $("btnChatLookup").onclick = (e) => lookupChat(e.target);
 
   $("btnReload").onclick = () => loadSettings()

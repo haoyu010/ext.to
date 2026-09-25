@@ -39,3 +39,34 @@ services:
       options:
         max-size: "10m"
         max-file: "3"
+    depends_on:
+      - flaresolverr
+
+  # Cloudflare clearance cookie harvester.
+  #
+  # cf_clearance is bound to the client IP, so the container that solves the
+  # challenge has to share the forwarder's egress address. Running it here
+  # rather than on another host is what makes the cookie replayable, and the
+  # service name gives the forwarder a stable address to call.
+  #
+  # Only reachable from the compose network: no ports are published, because
+  # the solver drives a real browser and must not be exposed.
+  flaresolverr:
+    image: ghcr.io/flaresolverr/flaresolverr:latest
+    container_name: ext-to-flaresolverr
+    restart: unless-stopped
+    environment:
+      - LOG_LEVEL=warning
+      - LOG_HTML=false
+      # The ext.to challenge is a managed challenge, which this solver passes
+      # on its own; an external CAPTCHA service is not needed.
+      - CAPTCHA_SOLVER=none
+      - TZ=Asia/Shanghai
+    # Chromium needs more shared memory than the 64 MB default, or it crashes
+    # partway through a solve and the forwarder sees a connection reset.
+    shm_size: 512mb
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

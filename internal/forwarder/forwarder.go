@@ -18,6 +18,7 @@ import (
 	"github.com/haoyu010/ext.to/internal/media"
 	"github.com/haoyu010/ext.to/internal/rules"
 	"github.com/haoyu010/ext.to/internal/scrape"
+	"github.com/haoyu010/ext.to/internal/solver"
 	"github.com/haoyu010/ext.to/internal/store"
 	"github.com/haoyu010/ext.to/internal/telegram"
 	"github.com/haoyu010/ext.to/internal/tmdb"
@@ -36,6 +37,12 @@ type Forwarder struct {
 	// lastRun summarises the most recent scan for the web UI.
 	lastRun   RunReport
 	lastRunMu sync.RWMutex
+
+	// solveMu serialises cookie refreshes. A cycle walks pages one at a time,
+	// but a manual check can run while the loop is between cycles, and two
+	// concurrent solves would waste a browser slot and race on the saved
+	// settings.
+	solveMu sync.Mutex
 }
 
 // RunReport summarises a single scan cycle.
@@ -48,7 +55,11 @@ type RunReport struct {
 	Skipped   int       `json:"skipped"`
 	Failed    int       `json:"failed"`
 	Baseline  bool      `json:"baseline"`
-	Errors    []string  `json:"errors,omitempty"`
+	// Refreshed counts how many times the Cloudflare cookie had to be
+	// re-solved during this cycle, so the dashboard can show that the
+	// automatic refresh is what kept the scan alive.
+	Refreshed int      `json:"refreshed"`
+	Errors    []string `json:"errors,omitempty"`
 }
 
 // errNoMatch marks a torrent that was intentionally not forwarded because
@@ -150,8 +161,8 @@ func (f *Forwarder) cycle(ctx context.Context) {
 		if err := f.state.Flush(); err != nil {
 			f.log.Printf("保存记录失败：%v", err)
 		}
-		f.log.Printf("本轮扫描结束：抓取 %d，新增匹配 %d，已推送 %d，跳过 %d，失败 %d，基线 %v",
-			rep.Found, rep.New, rep.Sent, rep.Skipped, rep.Failed, rep.Baseline)
+		f.log.Printf("本轮扫描结束：抓取 %d，新增匹配 %d，已推送 %d，跳过 %d，失败 %d，基线 %v，更新 Cookie %d 次",
+			rep.Found, rep.New, rep.Sent, rep.Skipped, rep.Failed, rep.Baseline, rep.Refreshed)
 	}()
 
 	if err := f.run(ctx, &rep); err != nil {
@@ -170,6 +181,7 @@ func (f *Forwarder) run(ctx context.Context, rep *RunReport) error {
 	if err != nil {
 		return err
 	}
+	client.OnBlocked = f.refreshClearance(client, rep)
 	items, err := client.FetchList(ctx, scrape.FetchOptions{
 		Categories: settings.Categories,
 		Age:        settings.Age,
@@ -288,6 +300,83 @@ func (f *Forwarder) run(ctx context.Context, rep *RunReport) error {
 		rep.Sent++
 	}
 	return nil
+}
+
+// refreshClearance returns the callback a scrape client invokes when Cloudflare
+// rejects its cookie. The fresh cookie is applied to the client and persisted,
+// so the next cycle starts from working credentials instead of solving again.
+//
+// The closure captures the client rather than re-reading settings, because the
+// caller that triggered the refresh is blocked waiting for it: the new values
+// have to reach that in-flight request, not some future one.
+func (f *Forwarder) refreshClearance(client *scrape.Client, rep *RunReport) scrape.BlockedHook {
+	return func(ctx context.Context) error {
+		settings := f.cfg.Get()
+		if strings.TrimSpace(settings.SolverURL) == "" {
+			return scrape.ErrBlocked
+		}
+		if !settings.AutoRefreshClearance {
+			return errors.New("cf_clearance 已失效，且「自动刷新 Cookie」已关闭，请手动更新")
+		}
+		if _, err := f.Solve(ctx); err != nil {
+			return err
+		}
+		// The client in flight has to be told about the new cookie: the retry
+		// happens on this same call, against the credentials stored in the
+		// client, not against the settings the caller loaded earlier.
+		next := f.cfg.Get()
+		client.SetCredentials(next.Clearance, next.Session, next.UserAgent)
+		if rep != nil {
+			rep.Refreshed++
+		}
+		return nil
+	}
+}
+
+// Solve obtains a fresh cf_clearance from the configured solver and stores it
+// along with the User-Agent it is bound to. It is the manual counterpart of the
+// automatic refresh, exposed so an operator can recover from an expired cookie
+// without waiting for a scan to fail first.
+func (f *Forwarder) Solve(ctx context.Context) (solver.Solution, error) {
+	settings := f.cfg.Get()
+	if strings.TrimSpace(settings.SolverURL) == "" {
+		return solver.Solution{}, solver.ErrNotConfigured
+	}
+
+	f.solveMu.Lock()
+	defer f.solveMu.Unlock()
+
+	// Solve the very page a scan will read: Cloudflare clears the challenge for
+	// the URL whose interstitial it served, so a clearance obtained for a
+	// different path is challenged again on this one.
+	cats := settings.Categories
+	if len(cats) == 0 {
+		cats = []int{config.CatAll}
+	}
+	target := scrape.ListURL(cats[0], settings.Age, 1)
+
+	f.log.Printf("正在通过 %s 获取新的 cf_clearance…", settings.SolverURL)
+	sol, err := solver.New(settings.SolverURL).Solve(ctx, target)
+	if err != nil {
+		return solver.Solution{}, fmt.Errorf("获取 cf_clearance 失败：%w", err)
+	}
+
+	// The write-back starts from a fresh read: re-saving the copy this cycle
+	// loaded would silently revert anything the operator saved in the panel
+	// while the solve was running.
+	next := f.cfg.Get()
+	next.Clearance = sol.Clearance
+	if sol.Session != "" {
+		next.Session = sol.Session
+	}
+	if sol.UserAgent != "" {
+		next.UserAgent = sol.UserAgent
+	}
+	if err := f.cfg.Update(next); err != nil {
+		return sol, fmt.Errorf("新的 cf_clearance 已获取，但保存失败（重启后需重新获取）：%w", err)
+	}
+	f.log.Printf("cf_clearance 已更新并保存，User-Agent 同步为 %s", sol.UserAgent)
+	return sol, nil
 }
 
 // publish resolves extras (TMDB match, magnet, poster) and sends one torrent.
@@ -537,6 +626,7 @@ func (f *Forwarder) Test(ctx context.Context, sample int) (*TestResult, error) {
 	if err != nil {
 		return nil, err
 	}
+	client.OnBlocked = f.refreshClearance(client, nil)
 	items, err := client.FetchList(ctx, scrape.FetchOptions{
 		Categories: settings.Categories,
 		Age:        settings.Age,

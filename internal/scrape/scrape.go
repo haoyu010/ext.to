@@ -64,7 +64,19 @@ type Client struct {
 	Clearance string
 	Session   string
 	UserAgent string
+
+	// OnBlocked is called when a response looks like a Cloudflare challenge.
+	// Returning nil marks the credentials as refreshed and makes the request
+	// retry once; returning an error surfaces it in place of the challenge.
+	//
+	// The hook is how a stale cookie stops being an operator problem: every
+	// request path in this package funnels through send, so one callback
+	// covers the listing, the detail page and the magnet endpoint alike.
+	OnBlocked BlockedHook
 }
+
+// BlockedHook refreshes whatever is needed to get past Cloudflare again.
+type BlockedHook func(ctx context.Context) error
 
 // New builds a client from settings, including optional proxy support.
 func New(s config.Settings) (*Client, error) {
@@ -89,6 +101,25 @@ func New(s config.Settings) (*Client, error) {
 	}, nil
 }
 
+// SetCredentials replaces the ext.to credentials in place. It is how a caller
+// applies a freshly solved cookie without rebuilding the client, and it must
+// not run concurrently with a request: the forwarder refreshes from inside the
+// hook, on the goroutine that is waiting for the retry.
+func (c *Client) SetCredentials(clearance, session, userAgent string) {
+	// Empty values are ignored rather than clearing the field: the solver
+	// always returns a clearance but not always a session, and a missing
+	// session means "site did not set one", not "drop the working one".
+	if clearance != "" {
+		c.Clearance = clearance
+	}
+	if session != "" {
+		c.Session = session
+	}
+	if userAgent != "" {
+		c.UserAgent = userAgent
+	}
+}
+
 // FetchOptions controls how a listing scan walks pages.
 type FetchOptions struct {
 	Categories []int
@@ -96,6 +127,14 @@ type FetchOptions struct {
 	MaxPages   int
 	// Delay is slept between page requests to stay polite.
 	Delay time.Duration
+}
+
+// ListURL builds the browse URL for one category page. It is exported so the
+// cookie solver can be pointed at exactly the page a scan will request:
+// Cloudflare issues a clearance for the challenge it actually served, and a
+// cookie obtained for a different path is challenged again on this one.
+func ListURL(cat, age, page int) string {
+	return fmt.Sprintf("%s%s&age=%d&cat=%d&page=%d", BaseURL, listPath, age, cat, page)
 }
 
 // FetchList returns the newest torrents across the requested categories.
@@ -116,7 +155,7 @@ func (c *Client) FetchList(ctx context.Context, opt FetchOptions) ([]Item, error
 			if err := ctx.Err(); err != nil {
 				return out, err
 			}
-			u := fmt.Sprintf("%s%s&age=%d&cat=%d&page=%d", BaseURL, listPath, opt.Age, cat, page)
+			u := ListURL(cat, opt.Age, page)
 			body, err := c.get(ctx, u)
 			if err != nil {
 				return out, fmt.Errorf("分类「%s」第 %d 页：%w",
@@ -165,7 +204,26 @@ func (c *Client) FetchMagnet(ctx context.Context, item Item) (string, error) {
 // page. The page token is bound to both the torrent and that specific page
 // load, so the body must belong to this item. Passing a body in saves a
 // second request when the caller already read the page for other metadata.
+//
+// When Cloudflare rejects the post, the credentials are refreshed and the
+// detail page is fetched again: the token and sessid are part of the signature,
+// so replaying the same form against a new session could only fail.
 func (c *Client) MagnetFromDetail(ctx context.Context, item Item, body []byte) (string, error) {
+	magnet, err := c.magnetFromDetail(ctx, item, body)
+	if !errors.Is(err, ErrBlocked) || c.OnBlocked == nil {
+		return magnet, err
+	}
+	if rerr := c.OnBlocked(ctx); rerr != nil {
+		return "", rerr
+	}
+	fresh, ferr := c.FetchDetailPage(ctx, item)
+	if ferr != nil {
+		return "", ferr
+	}
+	return c.magnetFromDetail(ctx, item, fresh)
+}
+
+func (c *Client) magnetFromDetail(ctx context.Context, item Item, body []byte) (string, error) {
 	detailURL := c.detailURL(item)
 	token, csrf := parseTokens(body)
 	if token == "" || csrf == "" {
@@ -199,6 +257,9 @@ func (c *Client) MagnetFromDetail(ctx context.Context, item Item, body []byte) (
 	raw, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if err != nil {
 		return "", err
+	}
+	if resp.StatusCode == http.StatusForbidden || IsChallenge(raw) {
+		return "", ErrBlocked
 	}
 	var out struct {
 		Success bool   `json:"success"`
@@ -344,28 +405,60 @@ func categoryLabel(id int) string {
 }
 
 func (c *Client) get(ctx context.Context, u string) ([]byte, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
-	if err != nil {
-		return nil, err
+	// The request is built inside the closure so a retry after a cookie
+	// refresh picks up the new cookies and User-Agent. Cloning an
+	// already-decorated request would replay the stale ones.
+	return c.send(ctx, func() (*http.Request, error) {
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+		if err != nil {
+			return nil, err
+		}
+		c.decorate(req)
+		req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8")
+		return req, nil
+	}, 32<<20)
+}
+
+// send performs a request and, when Cloudflare answers with a challenge, hands
+// control to OnBlocked once and retries. The request is rebuilt for the retry
+// so the refreshed cookie and User-Agent are actually applied: reusing the old
+// *http.Request would send the stale credentials again and fail identically.
+func (c *Client) send(ctx context.Context, build func() (*http.Request, error), limit int64) ([]byte, error) {
+	const attempts = 2
+	var lastErr error
+	for attempt := 0; attempt < attempts; attempt++ {
+		req, err := build()
+		if err != nil {
+			return nil, err
+		}
+		resp, err := c.HTTP.Do(req)
+		if err != nil {
+			return nil, err
+		}
+		body, readErr := io.ReadAll(io.LimitReader(resp.Body, limit))
+		resp.Body.Close()
+		if readErr != nil {
+			return nil, readErr
+		}
+
+		if IsChallenge(body) || resp.StatusCode == http.StatusForbidden {
+			lastErr = ErrBlocked
+			if c.OnBlocked == nil || attempt == attempts-1 {
+				return nil, ErrBlocked
+			}
+			if err := c.OnBlocked(ctx); err != nil {
+				// The refresh failure explains the block better than the
+				// block itself, so it replaces it rather than being wrapped.
+				return nil, err
+			}
+			continue
+		}
+		if resp.StatusCode != http.StatusOK {
+			return nil, fmt.Errorf("服务器返回 HTTP %d", resp.StatusCode)
+		}
+		return body, nil
 	}
-	c.decorate(req)
-	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8")
-	resp, err := c.HTTP.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 32<<20))
-	if err != nil {
-		return nil, err
-	}
-	if IsChallenge(body) {
-		return nil, ErrBlocked
-	}
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("服务器返回 HTTP %d", resp.StatusCode)
-	}
-	return body, nil
+	return nil, lastErr
 }
 
 func (c *Client) decorate(req *http.Request) {

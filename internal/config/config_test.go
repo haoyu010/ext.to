@@ -152,17 +152,48 @@ func TestValidateRejectsBadInput(t *testing.T) {
 		t.Error("expected an error when enabling without a bot token")
 	}
 
+	// Without a solver there is no way to obtain a cookie, so one has to be
+	// supplied by hand. The default install ships a solver address, so the
+	// negative case has to turn it off explicitly to be testing anything.
 	bad = base
 	bad.Enabled = true
 	bad.BotToken = "123:abc"
 	bad.ChatID = "-100123"
+	bad.SolverURL = ""
+	bad.AutoRefreshClearance = false
 	if err := bad.Validate(); err == nil {
-		t.Error("expected an error when enabling without a clearance cookie")
+		t.Error("expected an error when enabling without a clearance cookie or a solver")
 	}
 
 	bad.Clearance = "cookie-value"
 	if err := bad.Validate(); err != nil {
 		t.Errorf("a fully configured settings should validate, got %v", err)
+	}
+}
+
+// TestValidateAcceptsSolverInsteadOfCookie pins the rule that makes the
+// automatic refresh useful: with a solver configured, a blank cf_clearance is
+// not an error, because the first scan obtains one before reading the listing.
+// Requiring the cookie here would force the operator back to copying it by
+// hand, which is the failure the solver exists to remove.
+func TestValidateAcceptsSolverInsteadOfCookie(t *testing.T) {
+	s := Default()
+	s.Enabled = true
+	s.BotToken = "123:abc"
+	s.ChatID = "-100123"
+	s.Clearance = ""
+	if s.SolverURL == "" {
+		t.Fatal("the default settings must ship a solver address for this rule to matter")
+	}
+	if err := s.Validate(); err != nil {
+		t.Errorf("enabling with a solver but no cookie should validate, got %v", err)
+	}
+
+	// Turning the refresh off leaves nothing that can produce a cookie, so the
+	// same settings must then be rejected.
+	s.AutoRefreshClearance = false
+	if err := s.Validate(); err == nil {
+		t.Error("expected an error when the refresh is off and no cookie is set")
 	}
 }
 

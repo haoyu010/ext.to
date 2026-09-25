@@ -15,7 +15,8 @@
 - **首次运行建立基线** — 不会把整站历史灌进你的频道，只从下一次扫描开始推送新帖
 - **Web 管理面板（中文）** — 左侧导航分页：总览 / 转发记录 / 运行日志 / 抓取来源 / TMDB 匹配 / 分类过滤 / Telegram 推送 / 面板设置，每个分栏都有独立的「保存设置」
 - **凭证打码** — 接口不会回传明文 Bot Token 与 Cookie
-- **无需登录 ext.to** — 复用浏览器已通过 Cloudflare 校验的 `cf_clearance` Cookie
+- **自动过 Cloudflare 盾** — 内置 `cf_clearance` Cookie 自动刷新：被拦下时调用同机 FlareSolverr 边车重新解题、写入新 Cookie 并重试当前请求，不用再手动从浏览器复制
+- **无需登录 ext.to** — 复用浏览器已通过 Cloudflare 校验的 `cf_clearance` Cookie；边车是可选增强，不装就退回手动粘贴
 
 ## 快速开始
 
@@ -28,6 +29,9 @@ docker compose up -d
 ```
 
 打开 `http://<主机IP>:8090`，默认账号密码 **admin / admin**。
+
+这份 compose 会起两个容器：`ext-to-forwarder`（本程序）与 `ext-to-flaresolverr`（解题边车）。
+边车不对外暴露端口，只在本程序的 compose 网络里可见，随 `docker compose up -d` 一起拉取，不需要额外配置。
 
 如果容器启动后日志报 `permission denied` 写不了 `/data`，把 `docker-compose.yml` 里的 `PUID` / `PGID` 改成该目录在宿主机上的属主（SSH 里执行 `id` 查看，飞牛用户通常是 `1000:1000`）。
 
@@ -47,16 +51,32 @@ docker compose up -d
 
 ### 3. 配置 ext.to 访问
 
-ext.to 由 Cloudflare 保护，机房 IP 会被拦截。本项目复用你本机浏览器已通过的验证 Cookie：
+ext.to 由 Cloudflare 保护，机房 IP 会被拦截。有两种方式，面板上都在 **抓取来源 → 访问凭据 / 自动获取 Cookie**。
+
+**推荐：让边车自己解题（无需人工介入）**
+
+1. 确认 compose 里的 `flaresolverr` 服务起来了：`docker compose ps` 应看到两个容器
+2. 面板 → **抓取来源 → 自动获取 Cookie** → 地址填 `http://flaresolverr:8191/v1`（默认值）
+3. 勾选 **自动刷新 Cookie** → **保存设置** → 点 **立即获取**，日志会打印「cf_clearance 已更新并保存」
+
+之后扫描一旦被 Cloudflare 拦下，程序会自己重新解题、写入新 Cookie 并重试当前那条请求，
+本轮的「更新 Cookie」计数会 +1。**只要边车运行在同一台机器上，出口 IP 就是同一个**，
+而 cf_clearance 正是绑定在那上面，所以这条路径不需要任何手工操作，也不依赖你的浏览器。
+
+**手动方式：粘贴浏览器 Cookie**
+
+不用边车时（或想立刻换一个 Cookie）可以照下面做。前提是浏览器与 Docker 主机**同一个出口 IP**：
 
 1. **在浏览器里打开 ext.to**（必须和 Docker 主机**同一个出口 IP**，同一局域网通常就满足），通过 "Verifying you are human" 校验
 2. 按 `F12` → **Application / 应用程序** → **Cookies** → `https://ext.to`
 3. 复制 **`cf_clearance`** 的 **Value**（只复制值，不要整行）
 4. 顺手复制 **`PHPSESSID`** 的 Value（可选，但建议填）
 5. 面板 → **抓取来源 → 访问凭据**，粘贴进去
-6. **User-Agent 保持与你浏览器一致** —— Cloudflare 把 Cookie 同时绑定 IP 和 UA，UA 不匹配会立刻失效
+6. **User-Agent 保持与你浏览器一致** —— Cloudflare 把 Cookie 同时绑定 IP 和 UA，UA 不匹配会立刻失效；选择自动刷新时这一项会被自动同步，不用手改
 
-> `cf_clearance` 有效期通常为一年，但只要出口公网 IP 变了（运营商重播、换网络、开代理）就需要重新获取。
+> `cf_clearance` 有效期通常为一年，但只要出口公网 IP 变了（运营商重播、换网络、开代理）就需要重新获取，
+> 也可能被 Cloudflare 提前吊销 —— 后一种情况正是自动刷新要解决的。开着自动刷新时即使 Cookie 已经失效，
+> 第一次扫描也能自行救回来。
 
 ### 4. 开始转发
 
@@ -83,6 +103,8 @@ ext.to 由 Cloudflare 保护，机房 IP 会被拦截。本项目复用你本机
 | `silent` | 静默推送，不响铃 |
 | `disable_web_preview` | 关闭链接预览，让帖子更紧凑 |
 | `proxy` | HTTP 代理，仅在直连不通或需固定出口 IP 时使用 |
+| `solver_url` | FlareSolverr 地址，默认 `http://flaresolverr:8191/v1`（compose 里的服务名） |
+| `auto_refresh_clearance` | `cf_clearance` 失效时自动重新获取并重试；关掉则退回「报错 + 手动粘贴」 |
 | `tmdb_key` | TMDB API Key（v3 密钥或 v4 令牌）。留空则完全不启用 TMDB |
 | `tmdb_lang` | TMDB 语言，默认 `zh-CN`，返回中文标题与简介 |
 | `tmdb_only` | 只推送匹配到 TMDB 的种子，未匹配的计入「跳过」而不是失败 |
@@ -283,6 +305,18 @@ LIVE_COOKIE_FILE=./cookie.json go test ./internal/scrape/ -run TestLiveMagnetAnd
 
 `cookie.json` 是抓取到的 Cookie 结果（见下方数据结构），该测试会真实访问 ext.to。
 
+想在本地验证自动过盾，起一个边车再指过去即可（本机与部署主机同一出口 IP 时可用）：
+
+```bash
+docker run -d --name flaresolverr -p 8191:8191 --shm-size 512m \
+  ghcr.io/flaresolverr/flaresolverr:latest
+```
+
+然后面板 → **抓取来源 → 自动获取 Cookie** 填 `http://127.0.0.1:8191/v1`，
+点 **立即获取**：成功会打印「cf_clearance 已更新并保存」，并同步 User-Agent。
+把 Cookie 故意改坏再点 **测试抓取**，应当先看到「正在通过 … 获取新的 cf_clearance」，
+随后正常返回列表 —— 这就是自动恢复的完整路径。
+
 ### 目录结构
 
 ```
@@ -290,6 +324,7 @@ cmd/server/          程序入口：启动 HTTP 服务与轮询循环
 internal/config/     配置读写、校验、打码，以及推送模板渲染
 internal/media/      发布名解析：标题去噪、年份、季集、[剧集] / [电影] 前缀
 internal/scrape/     ext.to 抓取：列表解析、magnet 签名、海报提取
+internal/solver/     FlareSolverr 客户端：重新解题、取回 cf_clearance 与绑定 UA
 internal/tmdb/       TMDB 匹配：IMDb 编号换条目、标题精确搜索
 internal/rules/      分类规则引擎：YAML 规则解析、元数据匹配、黑名单判定
 internal/telegram/   Bot API 最小实现（sendMessage / sendPhoto / getMe）
@@ -329,6 +364,18 @@ scripts/             版本号递增脚本
 绑定到具体的一次页面加载。转发器因此一次性取回页面，再从同一份 body 里分别解析三项数据，避免重复请求，
 也保证 token 与正在推送的种子严格对应。
 
+**cf_clearance 只能由同 IP 的浏览器签发。** Cloudflare 把这张 Cookie 同时绑定到出口 IP、User-Agent
+与 TLS 指纹，所以它无法从任意一台浏览器复制过来用。这也是边车必须与程序同机的原因：两者共用一个
+NAT 地址，签出来的 Cookie 才能在转发请求上被接受。
+
+失效后的恢复走 `internal/scrape.Client.OnBlocked`：所有请求都经过同一个 `send`，
+因此列表页、详情页和 magnet 接口共用一条恢复路径 —— 拦下 → 调用解题边车 → 把新的 Cookie
+与 User-Agent 写回客户端 → 重试一次。重试必须**重新构建** `*http.Request`：克隆旧请求会把
+旧 Cookie 原样再发一遍，结果完全相同。
+
+唯一的例外是 magnet：它的 `hmac` 由 `pageToken` 与 `sessid` 一起签名，而 `sessid` 属于被拒绝的那个
+会话，重放表单不可能成功。这条路径改为刷新后**重新取一次详情页**，用新会话的 token 重新签名。
+
 **电影页与剧集页结构不同。** 电影页用 `Movie:` 行给出正式片名，海报放在 `detail-torrent-image`；
 剧集页没有对应行，而是以元数据块首行的 `Original name:` 标识，且 `detail-torrent-image` 指向
 `/static/img/no-torrent-image.png` 占位图 —— 真正的海报在 `serial_poster` 块里，是 TMDB 的图片地址。
@@ -350,7 +397,19 @@ TMDB 的 `year` / `first_air_date_year` 参数是精确匹配，用它查询会�
 ## 常见问题
 
 **日志里出现「遇到 Cloudflare 验证」**
-Cookie 失效了：可能过期、出口 IP 变了，或 User-Agent 与获取 Cookie 时不一致。回到「配置 ext.to 访问」重新获取。
+Cookie 失效了：可能过期、出口 IP 变了、被 Cloudflare 提前吊销，或 User-Agent 与获取 Cookie 时不一致。
+
+开启了 **自动刷新 Cookie** 时不该再看到这条 —— 扫描会自己解题重试，日志里会出现
+「cf_clearance 已更新并保存」。仍然失败的话，按错误里的关键词排查：
+
+- `FlareSolverr 未能通过验证：Challenge not detected!` —— 边车起来了，但没能完成验证。
+  先 `docker compose logs ext-to-flaresolverr` 看边车日志；机房 IP 会被苛评，家里宽带通常没问题。
+- `无法连接 FlareSolverr（http://flaresolverr:8191/v1）` —— 地址不通。确认两个容器在同一份
+  compose 里、`docker compose ps` 两个都是 Up；把程序部署到别处（不同出口 IP）时，
+  Cookie 会因 IP 不匹配立刻失效，边车必须与本程序同机。
+- `cf_clearance 已失效，且「自动刷新 Cookie」已关闭` —— 开关被关掉了，打开它或手动粘贴 Cookie。
+
+没装边车时，回到 **自动获取 Cookie / 访问凭据** 手动更新。
 
 **Test scrape 正常，但频道收不到消息**
 先点 **测试 Telegram**：它按顺序检查 Token、能否读到该频道、Bot 是不是管理员、有没有「发布消息」权限，

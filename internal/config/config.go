@@ -7,6 +7,7 @@ package config
 import (
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -98,6 +99,15 @@ type Settings struct {
 	UserAgent string `json:"user_agent"`
 	// Proxy is an optional HTTP(S) proxy, e.g. http://user:pass@host:port.
 	Proxy string `json:"proxy"`
+	// SolverURL points at a FlareSolverr v1 endpoint, for example
+	// http://flaresolverr:8191/v1. When set, a rejected cookie is refreshed
+	// automatically instead of stopping the loop until someone pastes a new
+	// one by hand.
+	SolverURL string `json:"solver_url"`
+	// AutoRefreshClearance enables that refresh. It is a separate switch
+	// because the solver is an extra container: an install without one must
+	// not spend every cycle retrying a connection that cannot succeed.
+	AutoRefreshClearance bool `json:"auto_refresh_clearance"`
 
 	// --- what to watch -------------------------------------------------
 	Categories []int    `json:"categories"`
@@ -166,6 +176,12 @@ type Settings struct {
 func Default() Settings {
 	return Settings{
 		UserAgent: DefaultUserAgent,
+		// A fresh install runs behind the bundled FlareSolverr sidecar, so the
+		// cookie refresh is on by default: without it the operator has to
+		// notice a 403 in the log and paste a browser cookie by hand, which is
+		// exactly the failure this default removes.
+		SolverURL:            DefaultSolverURL,
+		AutoRefreshClearance: true,
 		// The tracker files Chinese animation under 动漫, not under 剧集, so
 		// 剧集 alone cannot deliver the 国漫 the default rules are written to
 		// keep. The shipped defaults have to be coherent with each other, or a
@@ -211,6 +227,11 @@ var PosterSources = []string{PosterSourceAuto, PosterSourceTMDB, PosterSourceTra
 const DefaultUserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
 	"(KHTML, like Gecko) Chrome/153.0.0.0 Safari/537.36"
 
+// DefaultSolverURL is the address of the FlareSolverr sidecar in the shipped
+// compose file. The service name resolves on the compose network, so it needs
+// no host configuration.
+const DefaultSolverURL = "http://flaresolverr:8191/v1"
+
 // Validate normalises and sanity-checks settings, returning a human readable
 // error describing the first problem found.
 func (s *Settings) Validate() error {
@@ -237,6 +258,18 @@ func (s *Settings) Validate() error {
 	}
 	if s.UserAgent == "" {
 		s.UserAgent = DefaultUserAgent
+	}
+	s.SolverURL = strings.TrimSpace(s.SolverURL)
+	if s.SolverURL != "" {
+		u, err := url.Parse(s.SolverURL)
+		if err != nil || u.Scheme == "" || u.Host == "" {
+			return fmt.Errorf("FlareSolverr 地址 %q 无效，应形如 http://flaresolverr:8191/v1", s.SolverURL)
+		}
+	}
+	// Leaving the switch on without an address would make every failed scan
+	// report a refresh it can never perform, so the two are kept consistent.
+	if s.AutoRefreshClearance && s.SolverURL == "" {
+		s.AutoRefreshClearance = false
 	}
 	if s.Template == "" {
 		s.Template = DefaultTemplate
@@ -314,7 +347,13 @@ func (s *Settings) Validate() error {
 			return fmt.Errorf("开启监听前请先填写 Chat ID")
 		}
 		if s.Clearance == "" {
-			return fmt.Errorf("开启监听前请先填写 cf_clearance Cookie")
+			// With a solver configured the cookie is obtained on demand, and
+			// the first scan refreshes it before the listing is read. Demanding
+			// one by hand would defeat the point of the sidecar.
+			if !(s.AutoRefreshClearance && s.SolverURL != "") {
+				return fmt.Errorf("开启监听前请先填写 cf_clearance Cookie，" +
+					"或配置 FlareSolverr 地址并开启自动刷新")
+			}
 		}
 	}
 	return nil

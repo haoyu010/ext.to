@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log"
 	"net/http"
 	"strconv"
@@ -17,6 +18,7 @@ import (
 
 	"github.com/haoyu010/ext.to/internal/config"
 	"github.com/haoyu010/ext.to/internal/forwarder"
+	"github.com/haoyu010/ext.to/internal/solver"
 	"github.com/haoyu010/ext.to/internal/store"
 	"github.com/haoyu010/ext.to/internal/tmdb"
 )
@@ -81,6 +83,7 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("POST /api/test", s.auth(s.handleTest))
 	mux.HandleFunc("POST /api/test-telegram", s.auth(s.handleTestTelegram))
 	mux.HandleFunc("POST /api/test-tmdb", s.auth(s.handleTestTMDB))
+	mux.HandleFunc("POST /api/solve-cookie", s.auth(s.handleSolveCookie))
 	mux.HandleFunc("POST /api/tmdb-lookup", s.auth(s.handleTMDBLookup))
 	mux.HandleFunc("POST /api/chat-lookup", s.auth(s.handleChatLookup))
 	mux.HandleFunc("POST /api/start", s.auth(s.handleStart))
@@ -518,6 +521,36 @@ func lookupErrorText(err error) string {
 	default:
 		return "TMDB 查询失败：" + err.Error()
 	}
+}
+
+// handleSolveCookie asks the solver for a fresh cf_clearance and stores it.
+// It exists as its own endpoint because the cookie expires on its own
+// schedule: waiting for a scan to fail first is slower to diagnose than
+// pressing a button and reading the answer.
+func (s *Server) handleSolveCookie(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithTimeout(r.Context(), 3*time.Minute)
+	defer cancel()
+	sol, err := s.fwd.Solve(ctx)
+	switch {
+	case errors.Is(err, solver.ErrNotConfigured):
+		writeJSON(w, http.StatusOK, map[string]any{
+			"ok": false,
+			"error": "尚未配置 FlareSolverr 地址。请按部署文档启动 flaresolverr 边车容器，" +
+				"地址填 http://flaresolverr:8191/v1。",
+		})
+		return
+	case err != nil:
+		// The cookie may have been obtained even when saving it failed, so the
+		// detail is passed along instead of being collapsed into one message.
+		writeJSON(w, http.StatusOK, map[string]any{"ok": false, "error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok": true,
+		"detail": fmt.Sprintf("已获取新的 cf_clearance（%d 字符），User-Agent 已同步。",
+			len(sol.Clearance)),
+		"settings": s.cfg.Get().Masked(),
+	})
 }
 
 // handleChatLookup resolves a channel reference the operator pasted, so the
