@@ -240,24 +240,15 @@ func TestPublishSendsPhotoWithCaptionAndMagnet(t *testing.T) {
 	if !strings.Contains(caption, "1.5 GB") {
 		t.Errorf("caption should contain the size: %q", caption)
 	}
-	// The magnet goes on a copy button too. Telegram will not accept a magnet:
-	// hyperlink, so a button that copies the text is the only control that hands
-	// it over, and the caption alone cannot: a forwarded caption carries the text
-	// but a reader has to select it by hand.
-	markup := rec.form["reply_markup"]
-	if markup == "" {
-		t.Fatal("the post carried no copy button for its magnet")
+	// The copy button is off by default, and this post did not ask for one, so
+	// it must not be there: carrying one costs the post its web preview.
+	if markup := rec.form["reply_markup"]; markup != "" {
+		t.Errorf("a copy button was added although the setting is off: %q", markup)
 	}
-	if !strings.Contains(markup, "copy_text") {
-		t.Errorf("the button does not copy anything: %q", markup)
-	}
-	if !strings.Contains(markup, "magnet:?xt=urn:btih:DEADBEEF") {
-		t.Errorf("the button does not carry the magnet: %q", markup)
-	}
-	// The button is a link, not a description of one: it has to stay within what
-	// the Bot API accepts, and it must be a magnet rather than the detail page.
-	if strings.Contains(markup, "/torrent-page/") {
-		t.Errorf("the button copied the detail page instead of the magnet: %q", markup)
+	// The magnet is in the caption either way, which is what the button would
+	// have been for.
+	if !strings.Contains(caption, "magnet:?xt=urn:btih:DEADBEEF") {
+		t.Errorf("the caption does not print the magnet: %q", caption)
 	}
 
 	recs := state.Recent(10, "sent")
@@ -336,5 +327,89 @@ func TestPublishWithoutMagnetStillPosts(t *testing.T) {
 	}
 	if recs := state.Recent(10, "sent"); len(recs) != 1 {
 		t.Errorf("torrent should still be recorded as sent: %+v", recs)
+	}
+}
+
+// The copy button hands the magnet over on a tap, which a caption cannot do
+// beyond a selection by hand. It is a setting because carrying one costs the
+// post its web preview, so it has to appear when asked for and be trimmed to
+// what the Bot API accepts.
+func TestPublishAddsTheCopyButtonWhenEnabled(t *testing.T) {
+	site := fixtureSite(t, 0)
+	restore := scrape.BaseURL
+	scrape.BaseURL = site.URL
+	defer func() { scrape.BaseURL = restore }()
+
+	tgSrv, sent := newMockTelegram(t, false)
+	restoreTG := telegram.APIBase
+	telegram.APIBase = tgSrv.URL
+	defer func() { telegram.APIBase = restoreTG }()
+
+	f, _, settings := newTestForwarder(t, func(s *config.Settings) {
+		s.WithMagnet = true
+		s.WithCopyButton = true
+		s.WithPoster = false
+		s.Template = "{torrent_text}"
+	})
+	client, err := scrape.New(settings)
+	if err != nil {
+		t.Fatalf("scrape.New: %v", err)
+	}
+	item := scrape.Item{ID: 99, Slug: "z-99", Title: "With Button",
+		URL: site.URL + "/torrent-page/"}
+	if err := f.publish(context.Background(), client, telegram.New(settings.BotToken),
+		tmdb.New("", settings.TMDBLang), settings, disabledRules(t), item, 0); err != nil {
+		t.Fatalf("publish: %v", err)
+	}
+	if len(*sent) != 1 {
+		t.Fatalf("expected one Telegram request, got %d", len(*sent))
+	}
+	markup := (*sent)[0].form["reply_markup"]
+	if markup == "" {
+		t.Fatal("the setting is on but no button was sent")
+	}
+	if !strings.Contains(markup, "copy_text") {
+		t.Errorf("the button does not copy anything: %q", markup)
+	}
+	if !strings.Contains(markup, "magnet:?xt=urn:btih:DEADBEEF") {
+		t.Errorf("the button does not carry the magnet: %q", markup)
+	}
+	// The button carries the magnet, never the detail page: a reader who taps it
+	// wants the link their downloader takes.
+	if strings.Contains(markup, "/torrent-page/") {
+		t.Errorf("the button copied the detail page instead of the magnet: %q", markup)
+	}
+}
+
+// A post with no magnet has no button either: an empty one would be a control
+// that copies nothing.
+func TestPublishAddsNoCopyButtonWithoutAMagnet(t *testing.T) {
+	site := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`<html><body>no token here</body></html>`))
+	}))
+	t.Cleanup(site.Close)
+	restore := scrape.BaseURL
+	scrape.BaseURL = site.URL
+	defer func() { scrape.BaseURL = restore }()
+
+	tgSrv, sent := newMockTelegram(t, false)
+	restoreTG := telegram.APIBase
+	telegram.APIBase = tgSrv.URL
+	defer func() { telegram.APIBase = restoreTG }()
+
+	f, _, settings := newTestForwarder(t, func(s *config.Settings) {
+		s.WithMagnet = true
+		s.WithCopyButton = true
+		s.WithPoster = false
+	})
+	client, _ := scrape.New(settings)
+	item := scrape.Item{ID: 12, Slug: "y-12", Title: "No Magnet",
+		URL: site.URL + "/y-12/"}
+	if err := f.publish(context.Background(), client, telegram.New(settings.BotToken),
+		tmdb.New("", settings.TMDBLang), settings, disabledRules(t), item, 0); err != nil {
+		t.Fatalf("publish should succeed without a magnet: %v", err)
+	}
+	if markup := (*sent)[0].form["reply_markup"]; markup != "" {
+		t.Errorf("a button was sent with nothing to copy: %q", markup)
 	}
 }

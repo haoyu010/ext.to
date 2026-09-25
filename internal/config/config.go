@@ -126,8 +126,20 @@ type Settings struct {
 	Template   string `json:"template"`
 	WithPoster bool   `json:"with_poster"`
 	WithMagnet bool   `json:"with_magnet"`
-	Silent     bool   `json:"silent"`
-	DisableWeb bool   `json:"disable_web_preview"`
+	// WithCopyButton adds a button under the post that puts the magnet on the
+	// reader's clipboard. It is off by default because it has a measured cost:
+	// a message carrying one cannot be rendered by the channel's web preview
+	// (t.me/s/<channel>), which shows "Please open Telegram to view this post"
+	// instead of the caption. Two otherwise identical messages were posted to
+	// check it -- with the button the caption is missing from the preview page,
+	// without it the caption is there. Readers inside a Telegram client see the
+	// button and the caption normally.
+	//
+	// The magnet is already printed in the caption and copies with a tap, so an
+	// install that does not want the button loses nothing by leaving it off.
+	WithCopyButton bool `json:"with_copy_button"`
+	Silent         bool `json:"silent"`
+	DisableWeb     bool `json:"disable_web_preview"`
 
 	// --- tmdb enrichment ------------------------------------------------
 	// TMDBKey enables matching posts against The Movie Database. An empty

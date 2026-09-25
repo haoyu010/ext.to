@@ -918,7 +918,16 @@
               </label>
               <label class="check">
                 <input type="checkbox" id="setMagnet">
-                <span class="t"><b>附带磁力链接</b><small>从详情页实时获取签名磁力链接，供 <span class="kbd">{magnet}</span>、<span class="kbd">{torrent_url}</span> 与 <span class="kbd">{torrent_text}</span> 使用，并在消息下方加一个「复制磁力链接」按钮；取不到磁力时正文退回详情页链接、按钮自动省略，推送不会失败。</small></span>
+                <span class="t"><b>附带磁力链接</b><small>从详情页实时获取签名磁力链接，供 <span class="kbd">{magnet}</span>、<span class="kbd">{torrent_url}</span> 与 <span class="kbd">{torrent_text}</span> 使用；取不到磁力时正文退回详情页链接，推送不会失败。</small></span>
+              </label>
+              <label class="check">
+                <input type="checkbox" id="setCopyButton">
+                <span class="t"><b>复制磁力按钮</b><small>
+                  在消息下方放一个「复制磁力链接」按钮，点一下即把磁力放进剪贴板。
+                  <b>默认关闭</b>：实测带按钮的消息会被频道的<b>网页预览</b>（<span class="kbd">t.me/s/频道名</span>）拒之门外 ——
+                  预览页只显示「Please open Telegram to view this post」，看不到正文；同样的正文不带按钮就能正常显示。
+                  Telegram 客户端内不受影响，正文里的磁力本来就点一下可复制，所以不需要就别开。
+                </small></span>
               </label>
             </div>
             <div>
@@ -1232,6 +1241,7 @@ function fillSettings(s) {
   $("setTemplate").value = s.template || "";
   $("setPoster").checked = !!s.with_poster;
   $("setMagnet").checked = !!s.with_magnet;
+  $("setCopyButton").checked = !!s.with_copy_button;
   $("setSilent").checked = !!s.silent;
   $("setNoPreview").checked = !!s.disable_web_preview;
   $("setTmdbKey").value = s.tmdb_key || "";
@@ -1292,6 +1302,7 @@ function collectSettings() {
     template: $("setTemplate").value,
     with_poster: $("setPoster").checked,
     with_magnet: $("setMagnet").checked,
+    with_copy_button: $("setCopyButton").checked,
     silent: $("setSilent").checked,
     disable_web_preview: $("setNoPreview").checked,
     tmdb_key: $("setTmdbKey").value.trim(),
