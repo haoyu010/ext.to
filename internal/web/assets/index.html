@@ -859,9 +859,9 @@
             Telegram 不接受 <span class="kbd">magnet:</span> 开头的超链接 —— 写成 HTML 锚点会被静默丢掉，写成 entity 会被拒
             （<span class="kbd">Wrong port number specified in the URL</span>），
             所以套上锚点只会让正文看起来像能点，其实点不开。
-            另外磁力链接会顺带放进消息下方的「复制磁力链接」按钮，读者点一下就能拿到完整链接。
             <span class="kbd">{torrent_url}</span> 仍是链接的去向（磁力优先，取不到磁力时退回详情页），但它只适合放进
             <span class="kbd">href</span>、不适合直接显示。详情页链接是 <span class="kbd">{url}</span>。
+            想要「点一下复制」的话，在下面的「发送选项」里打开<b>复制磁力按钮</b>，但请先看那里的代价说明。
           </p>
            <p class="hint">
             <span class="kbd">{torrent_text}</span> 印出的是<b>完整磁力链接</b>，tracker 一个都不丢：只有 info hash 的链接，
@@ -886,7 +886,7 @@
             还不够才从链接尾部丢 tracker，一次丢一整个参数，绝不切在 URL 中间，<span class="kbd">info hash</span> 永远保留。
             正文里的链接若被缩过，就是在<b>整段简介让光之后</b>仍然放不下，此时只能牺牲末尾的 tracker。
             <span class="kbd">{magnet}</span> 也是完整磁力，但它超过上限、带海报时会被 Telegram 拒收，别直接放进正文做显示。
-            下方的复制按钮另有一份：它最多 256 个字符（实测 257 就被 Telegram 拒），所以固定带上
+            打开「复制磁力按钮」后，按钮另有一份：它最多 256 个字符（实测 257 就被 Telegram 拒），所以固定带上
             <span class="kbd">info hash</span> 和尽量多的 tracker，末尾同样不切在 URL 中间。
             <span class="kbd">{torrent_label}</span> 是旧模板用的文字版（「种子链接」/「详情页」），仍然可用，但转发后只剩那几个字。
           </p>
