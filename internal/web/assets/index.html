@@ -859,14 +859,19 @@
             <span class="kbd">{torrent_text}</span> 是显示出来的文字，直接印出链接本身，转发到别处也不会丢。
             详情页链接是 <span class="kbd">{url}</span>，磁力链接单独取是 <span class="kbd">{magnet}</span>（取不到时为空）。
           </p>
+           <p class="hint">
+            <span class="kbd">{torrent_text}</span> 印出的是<b>完整磁力链接</b>，tracker 一个都不丢：只有 info hash 的链接，
+            BT 客户端靠 DHT 还能开，但网盘离线下载不行 —— 它找不到 peer，只会把那串 hash 当文件名显示出来。
+          </p>
           <p class="hint">
-            磁力链接往往有 1000 多字符（站点会附上二十多个 tracker），而 Telegram 只把显示出来的文字算进
-            <span class="kbd">1024</span> 字符上限、链接的去向不计。所以 <span class="kbd">{torrent_text}</span>
-            印出的是略去 tracker 的短链（形如 <span class="kbd">magnet:?xt=urn:btih:449ffc…</span>），
-            而 <span class="kbd">{torrent_url}</span> 里仍保留完整链接，客户端照样能连上全部 tracker。
-            可把完整磁力直接当正文文字用的只有 <span class="kbd">{magnet}</span>，它超过上限、带海报时会被 Telegram 拒绝，请仅用于
-            <span class="kbd">href</span>。
-            <span class="kbd">{torrent_label}</span> 是旧模板用的文字版（「种子链接」/「详情页」），仍然可用。
+            Telegram 的图片说明上限是 <span class="kbd">1024</span> 个字符，且只算<b>看得见的文字</b>：链接的去向（<span class="kbd">href</span>）不计，
+            <span class="kbd">&lt;b&gt;</span> 这类标签也不计，<span class="kbd">&amp;amp;</span> 算 1 个字符而不是 5 个。
+            而站点给出的磁力实测 <span class="kbd">331 ~ 1188</span> 字符，未必都放得下，所以渲染时会按顺序让步：
+            先缩 <span class="kbd">{tmdb_overview}</span>（320 字起，每 40 字一档，让到 0 就整行去掉，不会只剩一个冒号）；
+            还不够才从链接尾部丢 tracker，一次丢一整个参数，绝不切在 URL 中间，<span class="kbd">info hash</span> 永远保留。
+            <span class="kbd">{torrent_url}</span> 里始终是完整链接，所以文字被缩过也照样能连上全部 tracker。
+            <span class="kbd">{magnet}</span> 同样是完整磁力，但它超过上限、带海报时会被 Telegram 拒收，请仅用于 <span class="kbd">href</span>。
+            <span class="kbd">{torrent_label}</span> 是旧模板用的文字版（「种子链接」/「详情页」），仍然可用，但转发后只剩那几个字。
           </p>
           <p class="hint">
             TMDB 的条目以文字呈现，用 <span class="kbd">{tmdb_ref}</span> 会渲染成 <span class="kbd">tv/287994</span> 这样的类型与编号，

@@ -4,6 +4,7 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 // A matched release must render the TMDB values.
@@ -128,12 +129,16 @@ func TestRenderDropsEmptyLabelLines(t *testing.T) {
 // reader wants; when the per-page magnet could not be resolved the detail page
 // is the honest fallback, and the text shown follows the destination so the
 // caption never promises a magnet it does not have.
+//
+// The text is the link itself, trackers and all: a magnet without a tracker is
+// the info hash alone, which a torrent client can still open but a cloud
+// download service cannot -- it shows the hash where the file names should be.
 func TestRenderTorrentLinkFallsBackToDetailPage(t *testing.T) {
+	magnet := "magnet:?xt=urn:btih:DEADBEEF&tr=udp%3A%2F%2Ft.example%3A6969"
 	got := Render("<a href=\"{torrent_url}\">{torrent_text}</a>", TemplateData{
-		Magnet: "magnet:?xt=urn:btih:DEADBEEF&tr=udp%3A%2F%2Ft.example%3A6969",
-		URL:    "https://ext.to/y-11/",
+		Magnet: magnet, URL: "https://ext.to/y-11/",
 	})
-	if want := `<a href="magnet:?xt=urn:btih:DEADBEEF&amp;tr=udp%3A%2F%2Ft.example%3A6969">magnet:?xt=urn:btih:DEADBEEF</a>`; got != want {
+	if want := `<a href="` + escape(magnet) + `">` + escape(magnet) + `</a>`; got != want {
 		t.Errorf("Render =\n  %q\nwant\n  %q", got, want)
 	}
 
@@ -164,41 +169,15 @@ func TestRenderTorrentLinkFallsBackToDetailPage(t *testing.T) {
 // presets used it. It is kept so a caption written against those releases keeps
 // rendering, and it has to agree with {torrent_text} about the destination.
 func TestRenderTorrentLabelNamesTheDestination(t *testing.T) {
+	magnet := "magnet:?xt=urn:btih:DEADBEEF&tr=udp%3A%2F%2Ft.example%3A6969"
 	got := Render("{torrent_label}|{torrent_text}", TemplateData{
-		Magnet: "magnet:?xt=urn:btih:DEADBEEF&tr=udp%3A%2F%2Ft.example%3A6969",
+		Magnet: magnet,
 	})
-	if want := "种子链接|magnet:?xt=urn:btih:DEADBEEF"; got != want {
+	if want := "种子链接|" + escape(magnet); got != want {
 		t.Errorf("Render = %q, want %q", got, want)
 	}
 	if got := Render("{torrent_label}", TemplateData{URL: "https://ext.to/y-11/"}); got != "详情页" {
 		t.Errorf("without a magnet the label should say 详情页: %q", got)
-	}
-}
-
-// A real ext.to magnet carries two dozen trackers and runs to about 1140
-// characters, which Telegram rejects as caption text. The text form keeps only
-// the info hash, and the href keeps the whole link so a client still reaches
-// every tracker the tracker listed.
-func TestVisibleMagnetKeepsOnlyTheInfoHash(t *testing.T) {
-	long := "magnet:?xt=urn:btih:cafebabe" + strings.Repeat("&tr=udp://tracker.example:6969/announce", 24)
-	if got, want := visibleMagnet(long), "magnet:?xt=urn:btih:cafebabe"; got != want {
-		t.Errorf("visibleMagnet = %q, want %q", got, want)
-	}
-	// A link the site did not shape this way is passed through untouched: a
-	// link that cannot be shortened beats a caption with no link in it.
-	for _, in := range []string{
-		"magnet:?dn=name.only",
-		"https://ext.to/y-11/",
-		"",
-	} {
-		if got := visibleMagnet(in); got != in {
-			t.Errorf("visibleMagnet(%q) = %q, want it unchanged", in, got)
-		}
-	}
-	// A hash with no trackers is already short and must survive verbatim.
-	short := "magnet:?xt=urn:btih:DEADBEEF"
-	if got := visibleMagnet(short); got != short {
-		t.Errorf("visibleMagnet(%q) = %q, want it unchanged", short, got)
 	}
 }
 
@@ -360,15 +339,14 @@ func TestShippedTemplatesLinkTheTorrent(t *testing.T) {
 // survive the longest values the fields can hold.
 //
 // The limit is counted over the visible text: a link's href is markup, not
-// text. That was measured against the live Bot API, and it is the reason the
-// preset can print a magnet at all: the full link runs to roughly 1140
-// characters (measured on the deployed install) and is rejected the moment it
-// appears as text, while the same link as an href is accepted alongside a
-// short label.
+// text, and entities count as the character they render rather than as the
+// digits that spell them. Both were measured against the live Bot API: 1024
+// runes of visible text is accepted and 1025 is rejected, while 1024 "&amp;"
+// (5120 raw characters) is accepted and "<b>" costs nothing.
 //
-// So the budget has two halves and both are pinned here: the visible text has
-// to fit, and the visible link has to be the short form, because the whole link
-// printed as text is what Telegram refuses.
+// visibleLen is the renderer's own count, and this test checks the caption
+// against that same measure. What keeps the two honest is the probe run against
+// the real Bot API, not this test alone.
 func TestShippedTemplateFitsTheCaptionLimit(t *testing.T) {
 	worst := TemplateData{
 		Title:        strings.Repeat("超长发布名 ", 20),
@@ -384,17 +362,212 @@ func TestShippedTemplateFitsTheCaptionLimit(t *testing.T) {
 	}
 	for name, tpl := range map[string]string{"DefaultTemplate": DefaultTemplate, "TMDBTemplate": TMDBTemplate} {
 		out := Render(tpl, worst)
-		visible := len([]rune(reTag.ReplaceAllString(out, "")))
-		if visible > 1024 {
+		if visible := visibleLen(out); visible > captionLimit {
 			t.Errorf("%s renders %d visible runes, over Telegram's 1024 caption limit:\n%s",
 				name, visible, out)
 		}
-		// The full magnet is 1189 characters here; only the href may hold it.
-		if strings.Contains(out, "&amp;tr=") && !strings.Contains(out, `href="magnet:`) {
-			t.Errorf("%s prints trackers outside the href:\n%s", name, out)
+		// The link is printed, and printed with its trackers: dropping them
+		// leaves the info hash, which a cloud download service cannot use.
+		if !strings.Contains(out, ">magnet:?xt=urn:btih:"+strings.Repeat("a", 40)+"&amp;tr=") {
+			t.Errorf("%s did not print the magnet with its trackers:\n%s", name, out)
 		}
-		if strings.Contains(out, ">magnet:?xt=urn:btih:"+strings.Repeat("a", 40)+"&") {
-			t.Errorf("%s prints the whole magnet as text:\n%s", name, out)
+	}
+}
+
+// The whole magnet is printed whenever the caption fits, because its trackers
+// are what let a download service find the files. A magnet without one is the
+// info hash alone: a torrent client can still open it, but the service shows
+// the hash where the file names should be.
+func TestWholeMagnetIsPrintedWhenItFits(t *testing.T) {
+	magnet := "magnet:?xt=urn:btih:cafebabe" + strings.Repeat("&tr=udp://tracker.example:6969/announce", 3)
+	out := Render(TMDBTemplate, TemplateData{
+		Title: "某片", Magnet: magnet, URL: "https://ext.to/x-1/",
+		TMDBTitle: "某片", TMDBYear: 2026, TMDBID: 1, TMDBType: "movie",
+	})
+	if !strings.Contains(out, escape(magnet)) {
+		t.Errorf("the magnet was not printed in full:\n%s", out)
+	}
+	// The link appears twice -- once as the destination, once as the text -- so
+	// three trackers mean six occurrences in the raw caption.
+	if n := strings.Count(out, "&amp;tr="); n != 6 {
+		t.Errorf("printed %d tracker references, want 6 (3 in the link, twice):\n%s", n, out)
+	}
+}
+
+// The synopsis is cut only as far as the link needs, and a link that fits with
+// no synopsis at all is still printed whole rather than trimmed.
+func TestSynopsisYieldsBeforeTheLinkIsTrimmed(t *testing.T) {
+	// Room for the link plus part of the synopsis, so the cut has to happen.
+	magnet := "magnet:?xt=urn:btih:" + strings.Repeat("a", 40) +
+		strings.Repeat("&tr=udp://tracker.example:6969/announce", 11)
+	out := Render(TMDBTemplate, TemplateData{
+		Title: "某片 2026", Magnet: magnet, URL: "https://ext.to/x-1/",
+		TMDBTitle: "某片", TMDBYear: 2026, TMDBID: 1, TMDBType: "movie",
+		TMDBOverview: strings.Repeat("简介正文", 300),
+		RuleCategory: "欧美电影",
+	})
+	if visible := visibleLen(out); visible > captionLimit {
+		t.Fatalf("caption is %d visible runes, over the limit:\n%s", visible, out)
+	}
+	if !strings.Contains(out, escape(magnet)) {
+		t.Errorf("the magnet was trimmed although cutting the synopsis would have fit it:\n%s", out)
+	}
+	if !strings.Contains(out, "简介：") {
+		t.Errorf("the synopsis was given up entirely rather than shortened:\n%s", out)
+	}
+
+	// A link long enough that only a caption with no synopsis can hold it: the
+	// whole link still survives, because the synopsis is what gives way.
+	long := "magnet:?xt=urn:btih:" + strings.Repeat("a", 40) +
+		strings.Repeat("&tr=udp://tracker.example:6969/announce", 20)
+	out = Render(TMDBTemplate, TemplateData{
+		Title: "某片 2026", Magnet: long, URL: "https://ext.to/x-1/",
+		TMDBTitle: "某片", TMDBYear: 2026, TMDBID: 1, TMDBType: "movie",
+		TMDBOverview: strings.Repeat("简介正文", 300), RuleCategory: "欧美电影",
+	})
+	if visible := visibleLen(out); visible > captionLimit {
+		t.Fatalf("caption is %d visible runes, over the limit:\n%s", visible, out)
+	}
+	if !strings.Contains(out, escape(long)) {
+		t.Errorf("the whole link should survive with the synopsis dropped:\n%s", out)
+	}
+}
+
+// A magnet so long that not even an empty caption has room for it: the link is
+// trimmed, but never below the info hash, because a link without it names
+// nothing.
+func TestOverlongMagnetIsTrimmedButKeepsTheInfoHash(t *testing.T) {
+	magnet := "magnet:?xt=urn:btih:" + strings.Repeat("a", 40) +
+		strings.Repeat("&tr=udp://tracker.example:6969/announce", 26)
+	out := Render(TMDBTemplate, TemplateData{
+		Title: "某片 2026", Magnet: magnet, URL: "https://ext.to/x-1/",
+		TMDBTitle: "某片", TMDBYear: 2026, TMDBID: 1, TMDBType: "movie",
+		TMDBOverview: strings.Repeat("简介正文", 300), RuleCategory: "欧美电影",
+	})
+	if visible := visibleLen(out); visible > captionLimit {
+		t.Fatalf("caption is %d visible runes, over the limit:\n%s", visible, out)
+	}
+	if !strings.Contains(out, "magnet:?xt=urn:btih:"+strings.Repeat("a", 40)) {
+		t.Errorf("the info hash was dropped from the link:\n%s", out)
+	}
+	if !strings.Contains(out, "&amp;tr=") {
+		t.Errorf("every tracker was dropped although room was left for some:\n%s", out)
+	}
+}
+
+// With no synopsis to give up the link has to shrink, but it stays a link:
+// whole tracker parameters go from the end, and the info hash -- the part that
+// names the torrent -- is always kept.
+func TestTrimmedMagnetKeepsTheInfoHashAndWholeParams(t *testing.T) {
+	magnet := "magnet:?xt=urn:btih:cafebabe" + strings.Repeat("&tr=udp://tracker.example:6969/announce", 30)
+	got := trimMagnet(magnet, 200)
+	if visibleLen(got) > 200 {
+		t.Errorf("trimMagnet returned %d characters, want at most 200: %q", visibleLen(got), got)
+	}
+	if !strings.HasPrefix(got, "magnet:?xt=urn:btih:cafebabe") {
+		t.Errorf("the info hash was cut off: %q", got)
+	}
+	if strings.HasSuffix(got, "announ") || strings.Contains(got, "&&") {
+		t.Errorf("a parameter was cut mid-way: %q", got)
+	}
+	for _, p := range strings.Split(got, "&")[1:] {
+		if p != "tr=udp://tracker.example:6969/announce" {
+			t.Errorf("unexpected parameter %q in %q", p, got)
+		}
+	}
+	// A link that fits is returned untouched, trackers and all.
+	if got := trimMagnet(magnet, visibleLen(magnet)); got != magnet {
+		t.Errorf("trimMagnet changed a link that fits:\n%q", got)
+	}
+	// No parameter boundary to cut at: the link is cut without an ellipsis, so
+	// it does not look like a link it is not.
+	long := "magnet:?xt=" + strings.Repeat("a", 300)
+	if got := trimMagnet(long, 50); visibleLen(got) != 50 || strings.Contains(got, "…") {
+		t.Errorf("trimMagnet with no boundary = %q", got)
+	}
+}
+
+// A caption with no link and no room is still bounded: the renderer must not
+// publish something Telegram will reject.
+func TestCaptionWithoutALinkIsStillBounded(t *testing.T) {
+	out := Render(TMDBTemplate, TemplateData{
+		Title: strings.Repeat("长标题 ", 400), TMDBTitle: strings.Repeat("片名", 100),
+		TMDBID: 1, TMDBType: "movie", TMDBOverview: strings.Repeat("简介", 500),
+		URL: "https://ext.to/x-1/",
+	})
+	if visible := visibleLen(out); visible > captionLimit {
+		t.Errorf("caption is %d visible runes, over the limit:\n%s", visible, out)
+	}
+	if strings.Contains(out, torrentTextSentinel) {
+		t.Errorf("the sentinel leaked into the caption: %q", out)
+	}
+}
+
+// The sentinel must never reach a published caption, in any of the paths.
+func TestSentinelNeverLeaks(t *testing.T) {
+	cases := []TemplateData{
+		{Title: "t", Magnet: "magnet:?xt=urn:btih:AB", URL: "https://ext.to/x-1/"},
+		{Title: "t", URL: "https://ext.to/x-1/"},
+		{Title: "t"},
+		{Title: "t", Magnet: "magnet:?xt=urn:btih:" + strings.Repeat("a", 40) +
+			strings.Repeat("&tr=udp://tracker.example:6969/announce", 30)},
+	}
+	tpls := []string{DefaultTemplate, TMDBTemplate, "<a href=\"{torrent_url}\">{torrent_text}</a>", "{torrent_text}"}
+	for i, d := range cases {
+		for _, tpl := range tpls {
+			out := Render(tpl, d)
+			if strings.Contains(out, torrentTextSentinel) || strings.ContainsRune(out, 0) {
+				t.Errorf("case %d, template %q: sentinel leaked: %q", i, tpl, out)
+			}
+		}
+	}
+}
+
+// clampVisible is the last line of defence, so it is pinned on its own: it has
+// to count the characters Telegram counts, cut between them rather than inside
+// them, and never leave half an entity behind.
+func TestClampVisible(t *testing.T) {
+	cases := []struct {
+		name  string
+		in    string
+		limit int
+		want  string
+	}{
+		{"under the limit", "short", 10, "short"},
+		{"exactly at it", "abcde", 5, "abcde"},
+		{"ascii cut", "abcdefghij", 5, "abcde"},
+		// CJK counts by character: cutting by byte would keep a third of it.
+		{"cjk cut", "字字字字字字字字字字", 4, "字字字字"},
+		{"cjk kept whole", "字字", 2, "字字"},
+		// A tag is free and must not be counted, nor cut into.
+		{"tag is free", "<b>abcdef</b>", 3, "<b>abc"},
+		{"tag survives the cut", "<b>abcdef</b>", 6, "<b>abcdef</b>"},
+		// An entity is one character, and must not be split.
+		{"entity cut", "&amp;&amp;&amp;&amp;", 2, "&amp;&amp;"},
+		{"entity whole", "&amp;", 1, "&amp;"},
+		{"entity then text", "&amp;abc", 2, "&amp;a"},
+		{"zero limit", "abc", 0, ""},
+	}
+	for _, c := range cases {
+		got := clampVisible(c.in, c.limit)
+		if got != c.want {
+			t.Errorf("%s: clampVisible(%q, %d) = %q, want %q",
+				c.name, c.in, c.limit, got, c.want)
+		}
+		if visibleLen(got) > c.limit {
+			t.Errorf("%s: clampVisible returned %d characters, over the %d limit: %q",
+				c.name, visibleLen(got), c.limit, got)
+		}
+	}
+	// Whatever it returns has to stay valid UTF-8 and keep the entities whole.
+	long := strings.Repeat("字&amp;<b>", 100)
+	for limit := 0; limit <= 60; limit++ {
+		got := clampVisible(long, limit)
+		if !utf8.ValidString(got) {
+			t.Fatalf("limit %d produced invalid UTF-8: %q", limit, got)
+		}
+		if strings.Count(got, "&") != strings.Count(got, ";") && !strings.HasPrefix(long[len(got):], "amp;") {
+			t.Fatalf("limit %d left half an entity: %q", limit, got)
 		}
 	}
 }

@@ -3,9 +3,47 @@ package config
 import (
 	"fmt"
 	"html"
+	"regexp"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/haoyu010/ext.to/internal/media"
+)
+
+// captionLimit is the number of characters Telegram accepts in a photo
+// caption. It is counted over the text a reader sees, and it is measured rather
+// than assumed: against the live Bot API, 1024 runes is accepted and 1025 is
+// rejected with "message caption is too long", while the tags and entities that
+// carry the markup cost nothing -- "<b>" is free and "&amp;" is one character,
+// not five.
+//
+// The photo limit is used even for a caption that will be sent as plain text,
+// where the limit is 4096: rendering has no way to know which one it is, and a
+// caption built for the smaller limit is valid for both.
+const captionLimit = 1024
+
+// torrentTextSentinel stands where the printable link goes while the caption is
+// being measured. The link's length decides how much of it can be printed, and
+// that cannot be known until the rest of the caption has been rendered, so the
+// substitution is done in two passes: everything else first, then the link into
+// whatever room is left.
+//
+// A NUL byte cannot appear in a caption otherwise: no placeholder produces one,
+// and Telegram would not accept it in a value.
+const torrentTextSentinel = "\x00link\x00"
+
+// reMarkup matches HTML tags, which Telegram does not count against the caption
+// limit. Anchors are the reason it matters: a link's destination is markup and
+// free, while its text is not.
+var reMarkup = regexp.MustCompile(`<[^>]*>`)
+
+// overviewCap is the longest synopsis worth publishing, and overviewStep the
+// granularity it is given up in. Re-rendering the caption once per step is
+// cheap next to publishing a truncated link, and a coarse step keeps the number
+// of passes small.
+const (
+	overviewCap  = 320
+	overviewStep = 40
 )
 
 // DefaultTemplate is the caption used for new installs. It is rendered as
@@ -24,6 +62,12 @@ import (
 // Its text is the link itself rather than the words "种子链接": a reader
 // copies a caption by copying text, and the words are worth nothing once the
 // message has been forwarded somewhere the anchor no longer renders.
+//
+// Printing the link means carrying its trackers, because a magnet without one
+// is the info hash and nothing else: a torrent client can still use it, but a
+// cloud download service cannot, and shows the hash instead of the files. The
+// trackers are only given up when the caption would otherwise be rejected, and
+// the overview is given up first.
 const DefaultTemplate = `名称：{title}
 分类：{category}
 大小：{size} · {files} 个文件
@@ -152,7 +196,7 @@ var TemplateFields = []struct{ Key, Desc string }{
 	{"{url}", "种子详情页的完整链接"},
 	{"{magnet}", "磁力链接，取不到时为空"},
 	{"{torrent_url}", "种子链接：磁力链接，取不到时退回详情页链接，永远可用"},
-	{"{torrent_text}", "配合 {torrent_url} 显示的文字：磁力链接本身（略去 tracker 参数，仍是可用的链接）或详情页链接"},
+	{"{torrent_text}", "配合 {torrent_url} 显示的文字：整条磁力链接本身（含 tracker），放不下时先缩简介、再从尾部丢 tracker，必要时退回详情页链接"},
 	{"{torrent_label}", "指向同一个去向的文字版：「种子链接」或「详情页」，保留给旧模板"},
 	{"{id}", "ext.to 种子编号"},
 }
@@ -251,7 +295,7 @@ func Render(tpl string, d TemplateData) string {
 	if torrentURL == "" {
 		torrentURL, torrentText, torrentLabel = d.URL, d.URL, "详情页"
 	} else {
-		torrentText, torrentLabel = visibleMagnet(d.Magnet), "种子链接"
+		torrentLabel = "种子链接"
 	}
 	// Like the TMDB title, the classified name degrades to the tracker's own
 	// category rather than rendering an empty value, so a template using it
@@ -291,39 +335,245 @@ func Render(tpl string, d TemplateData) string {
 	if tmdbYear != "" {
 		yearParen = " (" + tmdbYear + ")"
 	}
-	rep := strings.NewReplacer(
-		"{title}", escape(d.Title),
-		"{tmdb_title}", escape(tmdbTitle),
-		"{tmdb_original_title}", escape(d.TMDBOriginalTitle),
-		"{tmdb_year}", escape(tmdbYear),
-		"{tmdb_rating}", escape(tmdbRating),
-		"{tmdb_votes}", escape(tmdbVotes),
-		"{tmdb_url}", escape(tmdbURL),
-		"{tmdb_id}", fmt.Sprint(d.TMDBID),
-		"{tmdb_type}", escape(d.TMDBType),
-		"{tmdb_ref}", escape(tmdbRef),
-		"{tmdb_overview}", escape(truncateRunes(d.TMDBOverview, 320)),
-		"{category_tmdb}", escape(ruleCategory),
-		"{season}", escape(season),
-		"{season_label}", escape(seasonLabel),
-		"{tmdb_year_paren}", escape(yearParen),
-		"{episode}", escape(episode),
-		"{category}", escape(d.Category),
-		"{size}", escape(d.Size),
-		"{files}", fmt.Sprint(d.Files),
-		"{seeds}", fmt.Sprint(d.Seeds),
-		"{leeches}", fmt.Sprint(d.Leeches),
-		"{age}", escape(d.Age),
-		"{source}", escape(d.Source),
-		"{uploader}", escape(d.Uploader),
-		"{url}", escape(d.URL),
-		"{magnet}", escape(d.Magnet),
-		"{torrent_url}", escape(torrentURL),
-		"{torrent_text}", escape(torrentText),
-		"{torrent_label}", escape(torrentLabel),
-		"{id}", fmt.Sprint(d.ID),
-	)
-	return dropEmptyValueLines(rep.Replace(tpl))
+	// render builds the caption with the printable link left as a sentinel and
+	// the synopsis cut to ovCap, because the room the link needs depends on how
+	// much of the synopsis is kept. Rendering it in passes keeps the sentinel
+	// and the empty-value rules working together: a line whose only value is the
+	// sentinel is not empty yet, so it survives until the link is known.
+	render := func(ovCap int) string {
+		// A budget of zero means the synopsis is given up entirely, which is
+		// not the same as cutting it to nothing: truncateRunes would leave the
+		// ellipsis behind, and "简介：…" is worse than dropping the line.
+		overview := ""
+		if ovCap > 0 {
+			overview = escape(truncateRunes(d.TMDBOverview, ovCap))
+		}
+		rep := strings.NewReplacer(
+			"{title}", escape(d.Title),
+			"{tmdb_title}", escape(tmdbTitle),
+			"{tmdb_original_title}", escape(d.TMDBOriginalTitle),
+			"{tmdb_year}", escape(tmdbYear),
+			"{tmdb_rating}", escape(tmdbRating),
+			"{tmdb_votes}", escape(tmdbVotes),
+			"{tmdb_url}", escape(tmdbURL),
+			"{tmdb_id}", fmt.Sprint(d.TMDBID),
+			"{tmdb_type}", escape(d.TMDBType),
+			"{tmdb_ref}", escape(tmdbRef),
+			"{tmdb_overview}", overview,
+			"{category_tmdb}", escape(ruleCategory),
+			"{season}", escape(season),
+			"{season_label}", escape(seasonLabel),
+			"{tmdb_year_paren}", escape(yearParen),
+			"{episode}", escape(episode),
+			"{category}", escape(d.Category),
+			"{size}", escape(d.Size),
+			"{files}", fmt.Sprint(d.Files),
+			"{seeds}", fmt.Sprint(d.Seeds),
+			"{leeches}", fmt.Sprint(d.Leeches),
+			"{age}", escape(d.Age),
+			"{source}", escape(d.Source),
+			"{uploader}", escape(d.Uploader),
+			"{url}", escape(d.URL),
+			"{magnet}", escape(d.Magnet),
+			"{torrent_url}", escape(torrentURL),
+			"{torrent_text}", torrentTextSentinel,
+			"{torrent_label}", escape(torrentLabel),
+			"{id}", fmt.Sprint(d.ID),
+		)
+		return dropEmptyValueLines(rep.Replace(tpl))
+	}
+
+	// The whole magnet is what a reader needs, because its trackers are what let
+	// a download service find the files. A magnet without one is an info hash
+	// and nothing else: a torrent client can still use it, but a cloud download
+	// service shows the hash instead of the files. So the link is given the room
+	// it needs and the synopsis yields, largest first, until the caption fits.
+	var out string
+	switch {
+	// Neither a magnet nor a detail page, so the sentinel stands for nothing.
+	// Filling it and re-running the empty-value rule drops the link line rather
+	// than publishing a dead link.
+	case torrentText == "":
+		out = dropEmptyValueLines(strings.ReplaceAll(render(overviewCap), torrentTextSentinel, ""))
+
+	// A template that never mentions the link is not charged for one: the
+	// sentinel only appears where the operator wrote {torrent_text}.
+	case !strings.Contains(render(overviewCap), torrentTextSentinel):
+		out = render(overviewCap)
+
+	default:
+		out = ""
+		for _, ovCap := range overviewBudgets() {
+			caption := render(ovCap)
+			rest := strings.ReplaceAll(caption, torrentTextSentinel, "")
+			if room := captionLimit - visibleLen(rest); visibleLen(torrentText) <= room {
+				out = strings.ReplaceAll(caption, torrentTextSentinel, escape(torrentText))
+				break
+			}
+		}
+		// Even with no synopsis the caption is over the limit, so the link has
+		// to give up trackers. The info hash is kept: it is the part that names
+		// the torrent, and a link without it means nothing at all.
+		if out == "" {
+			caption := render(0)
+			room := captionLimit - visibleLen(strings.ReplaceAll(caption, torrentTextSentinel, ""))
+			if room < 0 {
+				room = 0
+			}
+			out = strings.ReplaceAll(caption, torrentTextSentinel, escape(trimMagnet(torrentText, room)))
+		}
+	}
+	return clampVisible(out, captionLimit)
+}
+
+// overviewBudgets lists the synopsis lengths to try, longest first. Each step is
+// the next concession: the first one that lets the whole link through wins, so
+// the synopsis is only ever cut as far as the link actually needs.
+func overviewBudgets() []int {
+	out := make([]int, 0, overviewCap/overviewStep+1)
+	for n := overviewCap; n > 0; n -= overviewStep {
+		out = append(out, n)
+	}
+	return append(out, 0)
+}
+
+// trimMagnet shortens a magnet link to at most room visible characters,
+// preferring to keep whole tracker parameters.
+//
+// Only the parameters that fit are kept, so the result stays a link a client
+// can act on rather than a string cut mid-URL. The info hash is always first
+// and always kept: it is the part that names the torrent, and without it the
+// link means nothing at all.
+func trimMagnet(magnet string, room int) string {
+	if visibleLen(magnet) <= room {
+		return magnet
+	}
+	head, _, ok := strings.Cut(magnet, "&")
+	if !ok {
+		// No parameter boundary to cut at, so there is nothing to keep but the
+		// beginning. It is cut without an ellipsis: a link is not prose, and a
+		// trailing "…" would only make it look like a link it is not.
+		r := []rune(magnet)
+		if room < 1 {
+			return ""
+		}
+		return string(r[:room])
+	}
+	out := head
+	for _, param := range strings.Split(magnet[len(head)+1:], "&") {
+		if param == "" {
+			continue
+		}
+		if visibleLen(out)+1+visibleLen(param) > room {
+			break
+		}
+		out += "&" + param
+	}
+	return out
+}
+
+// visibleLen counts the characters Telegram counts: the text a reader sees,
+// with the markup tags removed and the entities decoded.
+//
+// It is deliberately an over-count where the two could differ, because being
+// one character over loses the whole message. "&amp;" is counted as the single
+// character it renders, and anything that looks like a tag is dropped, which
+// errs on the side of a shorter caption.
+func visibleLen(s string) int {
+	s = reMarkup.ReplaceAllString(s, "")
+	s = strings.NewReplacer(
+		"&lt;", "<", "&gt;", ">", "&quot;", `"`, "&#34;", `"`, "&#39;", "'",
+		"&amp;", "&",
+	).Replace(s)
+	return utf8.RuneCountInString(s)
+}
+
+// clampVisible cuts s so that its visible text is at most limit characters.
+//
+// It is the last line of defence, for a caption that overflows even after the
+// synopsis has been given up and the link has been trimmed to its info hash.
+// Telegram rejects such a caption outright, and the forwarder records a
+// rejection as a permanent failure rather than retrying it, so a caption that
+// cannot be sent is a post that is lost -- a truncated one at least arrives.
+//
+// The cut is made between characters, never inside a tag or an entity, so it
+// cannot turn a value into something else or leave half of "&amp;" behind, and
+// it never splits a multi-byte character. It can leave a tag unclosed, which
+// Telegram rejects in turn; the send path already handles that by retrying as
+// plain text.
+func clampVisible(s string, limit int) string {
+	used, i := 0, 0
+	for i < len(s) && used < limit {
+		if s[i] == '<' {
+			end := strings.IndexByte(s[i:], '>')
+			if end < 0 {
+				break
+			}
+			i += end + 1
+			continue
+		}
+		step := 1
+		if s[i] == '&' {
+			if n := entityLen(s[i:]); n > 0 {
+				step = n
+			}
+		}
+		// The text between markup is cut by character, not by byte: counting
+		// bytes would spend the whole budget in a third of a CJK caption and
+		// cut the rest away.
+		if step == 1 {
+			_, size := utf8.DecodeRuneInString(s[i:])
+			if size > 1 {
+				step = size
+			}
+		}
+		used++
+		i += step
+	}
+	if i >= len(s) {
+		return s
+	}
+	// Anything that is markup at the cut point is kept, so a tag opened before
+	// it is still closed after it. A caption that ends inside <b> is rejected by
+	// Telegram, and losing the message would be worse than the overshoot: a tag
+	// costs nothing against the limit.
+	out := s[:i]
+	for i < len(s) && s[i] == '<' {
+		end := strings.IndexByte(s[i:], '>')
+		if end < 0 {
+			break
+		}
+		out += s[i : i+end+1]
+		i += end + 1
+	}
+	return out
+}
+
+// entityLen returns the byte length of the HTML entity at the start of s, or
+// zero when s does not begin with one. It exists to keep clampVisible from
+// cutting an entity in half.
+func entityLen(s string) int {
+	end := strings.IndexByte(s, ';')
+	if end < 0 || end > 10 {
+		return 0
+	}
+	name := s[1:end]
+	if strings.HasPrefix(name, "#x") || strings.HasPrefix(name, "#X") {
+		name = name[2:]
+	} else if strings.HasPrefix(name, "#") {
+		name = name[1:]
+	}
+	if name == "" {
+		return 0
+	}
+	for _, r := range name {
+		isDigit := r >= '0' && r <= '9'
+		isHex := (r >= 'a' && r <= 'f') || (r >= 'A' && r <= 'F')
+		if !isDigit && !isHex && !(r >= 'a' && r <= 'z') && !(r >= 'A' && r <= 'Z') {
+			return 0
+		}
+	}
+	return end + 1
 }
 
 // dropEmptyValueLines removes lines that ended up promising something they do
@@ -388,33 +638,6 @@ func isEmptyLabelLine(line string) bool {
 		return false
 	}
 	return !strings.ContainsAny(label, "<>")
-}
-
-// visibleMagnet returns the short form of a magnet link, for captions that
-// print the link as text rather than hiding it behind an anchor.
-//
-// A real ext.to magnet carries 24 to 25 trackers and runs to about 1140
-// characters, and Telegram counts the visible text of a caption against a 1024
-// limit (measured: the href is free, the text is not). Printing the whole
-// magnet is therefore rejected with "message caption is too long", so the text
-// keeps only the info hash, which is the part that identifies the torrent:
-// "magnet:?xt=urn:btih:449ffc…" is 60 characters and opens in every client,
-// while the trackers it drops are rediscovered over DHT and PEX.
-//
-// Everything else is left alone when there is no info hash to keep, because a
-// link that cannot be shortened is still better than a caption with no link in
-// it at all.
-func visibleMagnet(magnet string) string {
-	query, ok := strings.CutPrefix(magnet, "magnet:?")
-	if !ok {
-		return magnet
-	}
-	for _, param := range strings.FieldsFunc(query, func(r rune) bool { return r == '&' || r == ';' }) {
-		if strings.HasPrefix(param, "xt=") {
-			return "magnet:?" + param
-		}
-	}
-	return magnet
 }
 
 // humanCount renders a vote count compactly, for example 533052 -> "533k".
