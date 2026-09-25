@@ -145,3 +145,35 @@ func TestSolveUnreachableSolverNamesTheAddress(t *testing.T) {
 		t.Errorf("error = %v, want it to include the configured address", err)
 	}
 }
+
+// TestSolveUnknownHostExplainsTheSidecar pins the hint for the failure an
+// upgrade produces: an operator who pulls the new image without replacing
+// docker-compose.yml keeps the default solver address that nothing resolves,
+// and the raw DNS error does not say that. This reproduced during deployment.
+func TestSolveUnknownHostExplainsTheSidecar(t *testing.T) {
+	c := New("http://flaresolverr.invalid:8191/v1")
+	_, err := c.Solve(context.Background(), "https://ext.to/")
+	if err == nil {
+		t.Fatal("expected an error for an unresolvable host")
+	}
+	if !strings.Contains(err.Error(), "flaresolverr") {
+		t.Errorf("error = %v, want the host in the message", err)
+	}
+	if !strings.Contains(err.Error(), "边车容器没有运行") {
+		t.Errorf("error = %v, want the hint about the missing sidecar", err)
+	}
+}
+
+// TestSolveConnectionRefusedHasNoDNShint ensures the hint is not attached to
+// every failure: a refused connection means the container exists but is not
+// listening, which the sidecar advice would describe wrongly.
+func TestSolveConnectionRefusedHasNoDNShint(t *testing.T) {
+	c := New("http://127.0.0.1:1/v1")
+	_, err := c.Solve(context.Background(), "https://ext.to/")
+	if err == nil {
+		t.Fatal("expected an error for a refused connection")
+	}
+	if strings.Contains(err.Error(), "边车容器没有运行") {
+		t.Errorf("error = %v, must not blame the missing sidecar for a refused port", err)
+	}
+}

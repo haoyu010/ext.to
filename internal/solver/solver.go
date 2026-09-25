@@ -19,6 +19,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
@@ -124,7 +125,8 @@ func (c *Client) Solve(ctx context.Context, targetURL string) (Solution, error) 
 
 	resp, err := c.HTTP.Do(req)
 	if err != nil {
-		return Solution{}, fmt.Errorf("无法连接 FlareSolverr（%s）：%w", c.Endpoint, err)
+		return Solution{}, fmt.Errorf("无法连接 FlareSolverr（%s）：%w%s",
+			c.Endpoint, err, hintForDialError(err))
 	}
 	defer resp.Body.Close()
 	raw, err := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
@@ -162,6 +164,21 @@ func (c *Client) Solve(ctx context.Context, targetURL string) (Solution, error) 
 		return sol, errors.New("FlareSolverr 已通过验证，但没有返回 cf_clearance")
 	}
 	return sol, nil
+}
+
+// hintForDialError adds the fix for the failure that a wrong-looking address
+// almost always is. The bare error names the host, but the cause is usually
+// that the sidecar container does not exist: upgrading to the release that
+// introduced it without replacing docker-compose.yml leaves the forwarder
+// pointed at a hostname nothing on the network provides. Saying so in the log
+// saves an operator from debugging DNS.
+func hintForDialError(err error) string {
+	var dns *net.DNSError
+	if errors.As(err, &dns) {
+		return "。通常是边车容器没有运行：请确认 docker-compose.yml 里包含 flaresolverr 服务" +
+			"（1.3.0 之前升级上来的部署需要重新下载这份文件），然后 docker compose up -d"
+	}
+	return ""
 }
 
 func truncate(s string, n int) string {

@@ -33,6 +33,21 @@ docker compose up -d
 这份 compose 会起两个容器：`ext-to-forwarder`（本程序）与 `ext-to-flaresolverr`（解题边车）。
 边车不对外暴露端口，只在本程序的 compose 网络里可见，随 `docker compose up -d` 一起拉取，不需要额外配置。
 
+> **从 1.3.0 之前的版本升级时，必须先换掉 compose 文件。** 边车是新加的服务，
+> 老部署的 `docker-compose.yml` 里根本没有它，所以只 `docker pull` + `docker compose up -d`
+> 只会重建 forwarder，然后日志会报 `lookup flaresolverr ... no such host`。正确做法：
+>
+> ```bash
+> cd /vol1/1000/docker/extto
+> cp docker-compose.yml docker-compose.yml.bak        # 备份自己改过的 PUID / PGID / 端口
+> curl -O https://raw.githubusercontent.com/haoyu010/ext.to/main/deploy/docker-compose.yml
+> docker compose up -d                                  # 会新建 ext-to-flaresolverr
+> docker compose ps                                     # 两个容器都要是 Up
+> ```
+>
+> 把备份里自己改过的 `PUID` / `PGID`（以及端口映射）抄回新文件再启动。
+> `data/` 目录不用动，`config.json` 里没有 `solver_url` 字段，启动时会自动补上新默认值。
+
 如果容器启动后日志报 `permission denied` 写不了 `/data`，把 `docker-compose.yml` 里的 `PUID` / `PGID` 改成该目录在宿主机上的属主（SSH 里执行 `id` 查看，飞牛用户通常是 `1000:1000`）。
 
 ### 2. 配置 Telegram
@@ -407,6 +422,9 @@ Cookie 失效了：可能过期、出口 IP 变了、被 Cloudflare 提前吊销
 - `无法连接 FlareSolverr（http://flaresolverr:8191/v1）` —— 地址不通。确认两个容器在同一份
   compose 里、`docker compose ps` 两个都是 Up；把程序部署到别处（不同出口 IP）时，
   Cookie 会因 IP 不匹配立刻失效，边车必须与本程序同机。
+  如果错误后面跟着 `no such host`，那就是边车容器根本不存在：`docker compose -f
+  docker-compose.yml config --services` 应当同时列出 `extto` 和 `flaresolverr`，
+  只有 `extto` 说明你用的还是旧 compose 文件（见上面「从 1.3.0 之前的版本升级」）。
 - `cf_clearance 已失效，且「自动刷新 Cookie」已关闭` —— 开关被关掉了，打开它或手动粘贴 Cookie。
 
 没装边车时，回到 **自动获取 Cookie / 访问凭据** 手动更新。
