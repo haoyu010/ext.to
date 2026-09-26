@@ -187,6 +187,10 @@ func TestPublishSendsPhotoWithCaptionAndMagnet(t *testing.T) {
 	f, state, settings := newTestForwarder(t, func(s *config.Settings) {
 		s.WithPoster = true
 		s.WithMagnet = true
+		// The whole link, trackers and all, because restoring those URLs is what
+		// this test is about. The shipped default is the short form; a release
+		// that puts that link in a caption is covered below.
+		s.ShortMagnet = false
 		s.Template = "<b>{title}</b>\n{magnet}\n{size}"
 	})
 	client, err := scrape.New(settings)

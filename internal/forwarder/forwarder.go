@@ -445,7 +445,9 @@ func (f *Forwarder) publish(ctx context.Context, client *scrape.Client, tg *tele
 		}
 	}
 
-	caption := config.Render(settings.Template, templateData(it, entry, magnet, decision.Category))
+	data := templateData(it, entry, magnet, decision.Category)
+	data.ShortMagnet = settings.ShortMagnet
+	caption := config.Render(settings.Template, data)
 
 	photo := f.loadPoster(ctx, client, settings, it, detail, entry)
 
@@ -462,7 +464,11 @@ func (f *Forwarder) publish(ctx context.Context, client *scrape.Client, tg *tele
 	// either way, so an install that leaves the button off still hands it over.
 	copyText := ""
 	if settings.WithCopyButton && settings.WithMagnet && magnet != "" {
-		copyText = config.CopyMagnet(magnet)
+		// The button carries the same link the caption prints, so a reader who
+		// taps it and a reader who copies the text end up with one and the same
+		// magnet. A short link fits whole; a long one is cut to what a button
+		// accepts, on a parameter boundary.
+		copyText = config.CopyMagnet(config.MagnetFor(magnet, settings.ShortMagnet))
 	}
 
 	_, err := tg.Send(ctx, telegram.Post{
@@ -685,8 +691,11 @@ func (f *Forwarder) Test(ctx context.Context, sample int) (*TestResult, error) {
 			Source:   first.Uploader,
 			Uploader: first.Uploader,
 			URL:      first.URL,
-			Magnet:   "magnet:?xt=urn:btih:EXAMPLE",
+			Magnet:   "magnet:?xt=urn:btih:EXAMPLE&dn=SAMPLE+RELEASE&tr=udp%3A%2F%2Ftracker.example%3A1337%2Fannounce",
 			ID:       first.ID,
+			// The preview has to render the shape the install actually
+			// publishes, or it would show a link the operator never sees.
+			ShortMagnet: settings.ShortMagnet,
 		})
 	}
 	return res, nil

@@ -863,9 +863,11 @@
             <span class="kbd">href</span>、不适合直接显示。详情页链接是 <span class="kbd">{url}</span>。
             想要「点一下复制」的话，在下面的「发送选项」里打开<b>复制磁力按钮</b>，但请先看那里的代价说明。
           </p>
-           <p class="hint">
-            <span class="kbd">{torrent_text}</span> 印出的是<b>完整磁力链接</b>，tracker 一个都不丢：只有 info hash 的链接，
-            BT 客户端靠 DHT 还能开，但网盘离线下载不行 —— 它找不到 peer，只会把那串 hash 当文件名显示出来。
+          <p class="hint">
+            链接印多长由「发送选项」里的<b>只显示 info hash（短链接）</b>决定，默认<b>开启</b>。
+            短链在正文里拆成两行，<span class="kbd">magnet:?</span> 下面一行是 <span class="kbd">xt=urn:btih:…</span>，一共 60 个字符。
+            关掉则印站点给出的完整链接（实测 400~1200 字符）：它带着发布名和全部 tracker，
+            BT 客户端和网盘离线下载都能用，代价是正文会被这一行占满。
           </p>
           <p class="hint">
             站点把发布名原样写进磁力的 <span class="kbd">dn</span> 里，而发布名带空格和方括号，这样的 URI 是非法的：
@@ -881,7 +883,7 @@
           <p class="hint">
             Telegram 的图片说明上限是 <span class="kbd">1024</span> 个字符，且只算<b>看得见的文字</b>：链接的去向（<span class="kbd">href</span>）不计，
             <span class="kbd">&lt;b&gt;</span> 这类标签也不计，<span class="kbd">&amp;amp;</span> 算 1 个字符而不是 5 个。
-            而站点给出的磁力实测 <span class="kbd">331 ~ 1188</span> 字符，未必都放得下，所以渲染时会按顺序让步：
+            而站点给出的磁力实测 <span class="kbd">331 ~ 1188</span> 字符，未必都放得下（默认的短链接只有 info hash，不占地方），所以渲染时会按顺序让步：
             先缩 <span class="kbd">{tmdb_overview}</span>（320 字起，每 40 字一档，让到 0 就整行去掉，不会只剩一个冒号）；
             还不够才从链接尾部丢 tracker，一次丢一整个参数，绝不切在 URL 中间，<span class="kbd">info hash</span> 永远保留。
             正文里的链接若被缩过，就是在<b>整段简介让光之后</b>仍然放不下，此时只能牺牲末尾的 tracker。
@@ -919,6 +921,15 @@
               <label class="check">
                 <input type="checkbox" id="setMagnet">
                 <span class="t"><b>附带磁力链接</b><small>从详情页实时获取签名磁力链接，供 <span class="kbd">{magnet}</span>、<span class="kbd">{torrent_url}</span> 与 <span class="kbd">{torrent_text}</span> 使用；取不到磁力时正文退回详情页链接，推送不会失败。</small></span>
+              </label>
+              <label class="check">
+                <input type="checkbox" id="setShortMagnet">
+                <span class="t"><b>只显示 info hash（短链接）</b><small>
+                  <b>推荐开启</b>：正文只留 info hash，并按常见短链拆成两行：<span class="kbd">magnet:?</span> 换行 <span class="kbd">xt=urn:btih:…</span>，一共 60 个字符。点 code 复制时中间有一个换行，贴进单行输入框会被去掉，仍是一条合法磁力；复制按钮里放的是不换行的那条。
+                  关闭时印站点给出的完整链接，实测 400~1200 个字符 —— 站点把发布名塞进 <span class="kbd">dn</span>，还带一长串 tracker，正文会被它占满、简介被挤掉。
+                  <br>代价是 tracker：BT 客户端两条都能靠 DHT 找到 peer，但网盘离线下载拿短链只会显示那串 hash，不显示文件列表。
+                  要往网盘丢就关掉它。
+                </small></span>
               </label>
               <label class="check">
                 <input type="checkbox" id="setCopyButton">
@@ -1241,6 +1252,7 @@ function fillSettings(s) {
   $("setTemplate").value = s.template || "";
   $("setPoster").checked = !!s.with_poster;
   $("setMagnet").checked = !!s.with_magnet;
+  $("setShortMagnet").checked = !!s.short_magnet;
   $("setCopyButton").checked = !!s.with_copy_button;
   $("setSilent").checked = !!s.silent;
   $("setNoPreview").checked = !!s.disable_web_preview;
@@ -1302,6 +1314,7 @@ function collectSettings() {
     template: $("setTemplate").value,
     with_poster: $("setPoster").checked,
     with_magnet: $("setMagnet").checked,
+    short_magnet: $("setShortMagnet").checked,
     with_copy_button: $("setCopyButton").checked,
     silent: $("setSilent").checked,
     disable_web_preview: $("setNoPreview").checked,

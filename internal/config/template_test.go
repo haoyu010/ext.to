@@ -334,6 +334,17 @@ func TestLegacyTemplateMigratesOnlyWhenUntouched(t *testing.T) {
 	if got := migrateLegacyTemplate(""); got != "" {
 		t.Errorf("an empty template was changed to %q", got)
 	}
+	labelled := strings.Replace(DefaultTemplate, "🔴 {torrent_text}", "直达链接：{torrent_text}", 1)
+	if labelled == DefaultTemplate {
+		t.Fatal("DefaultTemplate no longer ends in the bullet, so the migration fixture is wrong")
+	}
+	if got := migrateLegacyTemplate(labelled); got != DefaultTemplate {
+		t.Errorf("the labelled default preset was not migrated:\n%q", got)
+	}
+	labelledTMDB := strings.Replace(TMDBTemplate, "🔴 {torrent_text}", "直达链接：{torrent_text}", 1)
+	if got := migrateLegacyTemplate(labelledTMDB); got != TMDBTemplate {
+		t.Errorf("the labelled TMDB preset was not migrated:\n%q", got)
+	}
 	// The current presets are not legacy and must survive a second load.
 	if got := migrateLegacyTemplate(TMDBTemplate); got != TMDBTemplate {
 		t.Errorf("the current preset is not stable across loads:\n%q", got)
@@ -362,8 +373,11 @@ func TestShippedTemplatesLinkTheTorrent(t *testing.T) {
 			Title: "某片 2026", Size: "1.43 GB", Magnet: "magnet:?xt=urn:btih:DEADBEEF",
 			TMDBTitle: "某片", TMDBYear: 2026, TMDBID: 287994, TMDBType: "tv",
 		})
-		if want := `<code>magnet:?xt=urn:btih:DEADBEEF</code>`; !strings.Contains(out, want) {
+		if want := "<code>magnet:?\nxt=urn:btih:DEADBEEF</code>"; !strings.Contains(out, want) {
 			t.Errorf("%s did not render the magnet as a copyable span:\n%s", name, out)
+		}
+		if !strings.Contains(tpl, "🔴 {torrent_text}") {
+			t.Errorf("%s does not mark the link with the red bullet", name)
 		}
 	}
 }
@@ -651,3 +665,34 @@ func TestTMDBTemplatePlaceholdersAreAllSupported(t *testing.T) {
 // rePlaceholder matches a template placeholder. It is deliberately the same
 // shape the renderer substitutes: a brace pair with no braces inside.
 var rePlaceholder = regexp.MustCompile(`\{[a-z_]+\}`)
+
+// A short magnet is the info hash on two lines, which is how the reference
+// posts in this space print it. The break is only in the caption: {magnet}
+// stays one line, because that is the URI a button copies.
+func TestShortMagnetPrintsOnTwoLines(t *testing.T) {
+	const hash = "urn:btih:FBC5903CD6EB1CE9918ED67CC1C21DA22CCDF839"
+	full := "magnet:?xt=" + hash + "&dn=Scary+Movie&tr=udp://tracker.example:6969/announce"
+	got := Render("{torrent_text}", TemplateData{Magnet: full, ShortMagnet: true, URL: "https://ext.to/x"})
+	want := "<code>magnet:?\nxt=" + hash + "</code>"
+	if got != want {
+		t.Fatalf("Render =\n  %q\nwant\n  %q", got, want)
+	}
+	if strings.Contains(got, "dn=") || strings.Contains(got, "tr=") {
+		t.Fatalf("the short caption still carries parameters: %s", got)
+	}
+	raw := Render("{magnet}", TemplateData{Magnet: full, ShortMagnet: true})
+	if raw != "magnet:?xt="+hash {
+		t.Fatalf("{magnet} = %q, want the one-line URI", raw)
+	}
+	out := Render(DefaultTemplate, TemplateData{Title: "Scary Movie", Magnet: full, ShortMagnet: true})
+	if !strings.Contains(out, "🔴 <code>magnet:?\nxt="+hash+"</code>") {
+		t.Fatalf("the preset is not the two-line short link:\n%s", out)
+	}
+}
+
+// With no link at all, the red bullet must not be published on its own.
+func TestEmptyMagnetDropsTheBullet(t *testing.T) {
+	if got := Render("正文\n🔴 {torrent_text}", TemplateData{}); got != "正文" {
+		t.Errorf("an empty link left the bullet behind: %q", got)
+	}
+}

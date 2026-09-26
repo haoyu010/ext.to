@@ -126,6 +126,16 @@ type Settings struct {
 	Template   string `json:"template"`
 	WithPoster bool   `json:"with_poster"`
 	WithMagnet bool   `json:"with_magnet"`
+	// ShortMagnet prints only the info hash of the magnet. The caption shows it
+	// on two lines, "magnet:?" and then "xt=urn:btih:...", 60 characters in all,
+	// which is the shape other forwarders publish. The site's own link is 400 to
+	// 1200 once its dn and its page of trackers are counted.
+	//
+	// The cost is trackers: a torrent client finds peers through DHT either way,
+	// but a cloud download service with no tracker cannot, and lists the hash
+	// instead of the files. Print the whole link when the posts are meant to be
+	// handed to one of those.
+	ShortMagnet bool `json:"short_magnet"`
 	// WithCopyButton adds a button under the post that puts the magnet on the
 	// reader's clipboard. It is off by default because it has a measured cost:
 	// a message carrying one cannot be rendered by the channel's web preview
@@ -199,12 +209,19 @@ func Default() Settings {
 		// keep. The shipped defaults have to be coherent with each other, or a
 		// fresh install looks like a broken filter instead of a wrong category
 		// selection. Movies are left out because no default rule keeps them.
-		Categories:      []int{CatTV, CatAnime},
-		Age:             0,
-		MaxPages:        2,
-		Template:        DefaultTemplate,
-		WithPoster:      true,
-		WithMagnet:      true,
+		Categories: []int{CatTV, CatAnime},
+		Age:        0,
+		MaxPages:   2,
+		Template:   DefaultTemplate,
+		WithPoster: true,
+		WithMagnet: true,
+		// Short by default: the site's own link measures 400 to 1200 characters
+		// once its dn and its page of trackers are counted, which is a wall of
+		// text in a caption and enough to push the synopsis out. The info hash
+		// is 60 characters, printed on two lines, and is the part a torrent
+		// client actually needs. An operator feeding a cloud download service
+		// turns this off.
+		ShortMagnet:     true,
 		Silent:          false,
 		IntervalSeconds: 600,
 		BatchSize:       10,

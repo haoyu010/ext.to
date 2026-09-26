@@ -114,6 +114,71 @@ func CopyMagnet(magnet string) string {
 	return trimMagnet(CleanMagnet(magnet), copyTextLimit)
 }
 
+// ShortMagnet reduces a magnet link to its info hash: "magnet:?xt=urn:btih:...".
+//
+// The site's own magnet carries the release name in dn and a page of trackers,
+// which measures 400 to 1200 characters. That is a wall of text in a caption,
+// and it is what other forwarders in this space do not print: they keep the
+// info hash alone, which is 60 characters. displayMagnet is what breaks it onto two lines.
+//
+// The trade is trackers. A client with DHT finds peers from the hash alone, so
+// a torrent client opens either form; a cloud download service does not, and
+// with no tracker it shows the hash instead of the file list. Which of the two
+// matters is the operator's call, so this is a setting rather than a decision,
+// and ShortMagnet is the function that expresses the short one.
+func ShortMagnet(magnet string) string {
+	const scheme = "magnet:?"
+	if !strings.HasPrefix(magnet, scheme) {
+		return magnet
+	}
+	for _, p := range strings.Split(magnet[len(scheme):], "&") {
+		name, value, ok := strings.Cut(p, "=")
+		// The info hash is the parameter that names the torrent, and it is the
+		// only one kept. An unrecognised shape is returned as it came in, so a
+		// link this does not understand is not silently emptied.
+		if ok && strings.EqualFold(name, "xt") && value != "" {
+			return scheme + "xt=" + value
+		}
+	}
+	return magnet
+}
+
+// MagnetFor returns the magnet as this install wants it printed: the site's
+// whole link, or the info hash alone when short is set.
+//
+// Both the caption and the copy button go through here, so the two cannot
+// disagree about which link a reader is given.
+func MagnetFor(magnet string, short bool) string {
+	magnet = CleanMagnet(magnet)
+	if short {
+		return ShortMagnet(magnet)
+	}
+	return magnet
+}
+
+// displayMagnet is the caption's shape of a short magnet. Other forwarders
+// print the info hash on two lines,
+//
+//	magnet:?
+//	xt=urn:btih:HASH
+//
+// so a phone can show the whole hash without scrolling sideways. The break is
+// only cosmetic: it is not part of the URI. A button copies the one-line form,
+// and pasting the two-line form into a single-line box drops the break, which
+// leaves magnet:?xt=urn:btih:HASH either way.
+//
+// A link that still carries parameters is left on one line. The break exists
+// to keep a 60-character hash readable, and splitting a link that is mostly
+// trackers would only hide them.
+func displayMagnet(magnet string) string {
+	const scheme = "magnet:?"
+	rest, ok := strings.CutPrefix(magnet, scheme)
+	if !ok || strings.Contains(rest, "&") || !strings.HasPrefix(rest, "xt=") || len(rest) <= len("xt=") {
+		return magnet
+	}
+	return scheme + "\n" + rest
+}
+
 // encodeURIValue percent-encodes the characters a URI cannot carry unescaped.
 func encodeURIValue(v string) string {
 	if !strings.ContainsAny(v, magnetUnsafe) {
@@ -154,18 +219,18 @@ func encodeURIValue(v string) string {
 // holds a magnet, which Telegram clients copy on a tap, and none when it holds
 // the detail page, whose URL Telegram linkifies by itself.
 //
-// Printing the link means carrying its trackers, because a magnet without one
-// is the info hash and nothing else: a torrent client can still use it, but a
-// cloud download service cannot, and shows the hash instead of the files. The
-// trackers are only given up when the caption would otherwise be rejected, and
-// the overview is given up first.
+// The short-link switch, which is on by default, prints that link as the info
+// hash alone and breaks it after the scheme, which is the two-line shape other
+// forwarders use. The red bullet marks the line. Trackers are what the switch
+// gives up: a torrent client finds peers from the hash, and a cloud download
+// service does not. Turning the switch off prints the site's whole link instead.
 const DefaultTemplate = `名称：{title}
 分类：{category}
 大小：{size} · {files} 个文件
 做种：{seeds} · 下载：{leeches}
 发布：{age}
 
-直达链接：{torrent_text}`
+🔴 {torrent_text}`
 
 // TMDBTemplate is an optional caption preset that leads with the matched TMDB
 // entry. It is offered in the dashboard rather than applied by default, because
@@ -191,7 +256,7 @@ TMDB：{tmdb_ref}
 分享：{uploader}
 大小：{size}
 
-直达链接：{torrent_text}`
+🔴 {torrent_text}`
 
 // legacyTemplates are the presets this project shipped before the torrent link
 // was introduced, kept so an existing install can be moved onto the current
@@ -216,6 +281,10 @@ TMDB：{tmdb_ref}
 // install that never edited its caption would keep a line whose link goes
 // nowhere. Again the wording of the migration is the same: only a verbatim
 // preset moves.
+//
+// The presets that labelled the link "直达链接" are here for the same
+// reason once more: an untouched caption would keep the label, and the short
+// link these posts are meant to look like has none, only the red bullet.
 var legacyTemplates = map[string]string{
 	`<b>{title}</b>
 
@@ -270,6 +339,24 @@ TMDB：{tmdb_ref}
 大小：{size}
 
 <a href="{torrent_url}">{torrent_text}</a>`: TMDBTemplate,
+	`名称：{title}
+分类：{category}
+大小：{size} · {files} 个文件
+做种：{seeds} · 下载：{leeches}
+发布：{age}
+
+直达链接：{torrent_text}`: DefaultTemplate,
+	`片名：{tmdb_title}{season_label}
+年份：{tmdb_year}
+TMDB：{tmdb_ref}
+分类：{category_tmdb}
+
+{title}
+简介：{tmdb_overview}
+分享：{uploader}
+大小：{size}
+
+直达链接：{torrent_text}`: TMDBTemplate,
 }
 
 // migrateLegacyTemplate upgrades a template still held verbatim from an
@@ -310,9 +397,9 @@ var TemplateFields = []struct{ Key, Desc string }{
 	{"{source}", "来源站点，例如 DHT 或 UIndex"},
 	{"{uploader}", "ext.to 给出的发布者"},
 	{"{url}", "种子详情页的完整链接"},
-	{"{magnet}", "磁力链接（已修正站点写在 dn 里的非法字符），取不到时为空"},
+	{"{magnet}", "磁力链接（已修正站点写在 dn 里的非法字符）；开启「只显示 info hash」时是短链接。取不到时为空"},
 	{"{torrent_url}", "种子链接的去向：磁力链接，取不到时退回详情页链接，永远可用。只适合放进 href，不能直接显示"},
-	{"{torrent_text}", "直接显示的种子链接：磁力会自动套上 <code>（可点击复制，转发后也不丢），放不下时先缩简介、再从尾部丢 tracker，取不到磁力时退回详情页链接"},
+	{"{torrent_text}", "直接显示的种子链接：磁力会自动套上 <code>（可点击复制，转发后也不丢）；开启短链接时只印 info hash，并在 magnet:? 后换行，放不下时先缩简介、再从尾部丢 tracker，取不到磁力时退回详情页链接"},
 	{"{torrent_label}", "指向同一个去向的文字版：「种子链接」或「详情页」，保留给旧模板"},
 	{"{id}", "ext.to 种子编号"},
 }
@@ -331,6 +418,11 @@ type TemplateData struct {
 	URL      string
 	Magnet   string
 	ID       int
+	// ShortMagnet prints the magnet as its info hash alone rather than with the
+	// release name and trackers the site attached. It is carried here because
+	// the caption is what chooses between the two shapes, and Render has no
+	// settings of its own.
+	ShortMagnet bool
 
 	// TMDB fields are empty when the release was not matched.
 	TMDBTitle         string
@@ -402,6 +494,10 @@ func Render(tpl string, d TemplateData) string {
 	// URI malformed, and a strict parser -- Telegram's own link detector, and
 	// the cloud download services these posts are read with -- stops at it.
 	magnet := CleanMagnet(d.Magnet)
+	// The printable form is the whole link or the info hash alone, depending on
+	// what the operator asked for. It goes through the same helper the copy
+	// button uses, so the two cannot disagree about which link a reader gets.
+	printable := MagnetFor(magnet, d.ShortMagnet)
 
 	// One link serves both cases. A magnet is what a reader actually wants, and
 	// the detail page is the honest fallback when none could be resolved: the
@@ -425,12 +521,16 @@ func Render(tpl string, d TemplateData) string {
 	// The detail page is the opposite case and must stay a real link, so it is
 	// printed bare: Telegram linkifies a bare https URL on its own, while an
 	// anchor wrapping a <code> span loses its href altogether (measured).
-	var torrentURL, torrentText, torrentLabel, torrentHTML string
-	if magnet != "" {
-		torrentURL, torrentText, torrentLabel = magnet, magnet, "种子链接"
-		torrentHTML = "<code>" + escape(magnet) + "</code>"
+	var torrentURL, torrentText, torrentShown, torrentLabel, torrentHTML string
+	if printable != "" {
+		torrentURL, torrentText, torrentLabel = printable, printable, "种子链接"
+		// The caption may break a short magnet onto two lines. The value the
+		// other placeholders carry stays the one-line URI, so a button and a
+		// {magnet} agree with each other and not with the line break.
+		torrentShown = displayMagnet(printable)
+		torrentHTML = "<code>" + escape(torrentShown) + "</code>"
 	} else {
-		torrentURL, torrentText = d.URL, d.URL
+		torrentURL, torrentText, torrentShown = d.URL, d.URL, d.URL
 		torrentHTML = escape(d.URL)
 		if d.URL != "" {
 			torrentLabel = "详情页"
@@ -513,7 +613,7 @@ func Render(tpl string, d TemplateData) string {
 			"{source}", escape(d.Source),
 			"{uploader}", escape(d.Uploader),
 			"{url}", escape(d.URL),
-			"{magnet}", escape(magnet),
+			"{magnet}", escape(printable),
 			"{torrent_url}", escape(torrentURL),
 			"{torrent_text}", torrentTextSentinel,
 			"{torrent_label}", escape(torrentLabel),
@@ -522,11 +622,11 @@ func Render(tpl string, d TemplateData) string {
 		return dropEmptyValueLines(rep.Replace(tpl))
 	}
 
-	// The whole magnet is what a reader needs, because its trackers are what let
-	// a download service find the files. A magnet without one is an info hash
-	// and nothing else: a torrent client can still use it, but a cloud download
-	// service shows the hash instead of the files. So the link is given the room
-	// it needs and the synopsis yields, largest first, until the caption fits.
+	// The link is given the room it needs and the synopsis yields, largest
+	// first, until the caption fits. How much room that is depends on the shape
+	// the operator chose: the info hash alone is 60 characters and costs the
+	// caption nothing, while the site's whole link measures 400 to 1200 and can
+	// push the synopsis out entirely.
 	var out string
 	switch {
 	// Neither a magnet nor a detail page, so the sentinel stands for nothing.
@@ -545,10 +645,18 @@ func Render(tpl string, d TemplateData) string {
 		for _, ovCap := range overviewBudgets() {
 			caption := render(ovCap)
 			rest := strings.ReplaceAll(caption, torrentTextSentinel, "")
-			if room := captionLimit - visibleLen(rest); visibleLen(torrentText) <= room {
+			room := captionLimit - visibleLen(rest)
+			switch {
+			case visibleLen(torrentShown) <= room:
 				out = strings.ReplaceAll(caption, torrentTextSentinel, torrentHTML)
-				break
+			case visibleLen(torrentText) <= room:
+				// The line break is cosmetic. Drop it before cutting the hash:
+				// a caption that can hold the URI still has to hold the URI.
+				out = strings.ReplaceAll(caption, torrentTextSentinel, wrapTorrent(torrentText, magnet))
+			default:
+				continue
 			}
+			break
 		}
 		// Even with no synopsis the caption is over the limit, so the link has
 		// to give up trackers. The info hash is kept: it is the part that names
@@ -745,12 +853,19 @@ func dropEmptyValueLines(s string) string {
 	lines := strings.Split(s, "\n")
 	out := lines[:0]
 	for _, line := range lines {
-		if isEmptyLabelLine(line) || isEmptyLinkLine(line) {
+		if isEmptyLabelLine(line) || isEmptyLinkLine(line) || isEmptyBulletLine(line) {
 			continue
 		}
 		out = append(out, line)
 	}
 	return strings.Join(out, "\n")
+}
+
+// isEmptyBulletLine reports a link line whose only content is the magnet
+// bullet. The shipped preset writes "🔴 {torrent_text}", and with no link that
+// collapses to the bullet alone, which must not be published.
+func isEmptyBulletLine(line string) bool {
+	return strings.TrimSpace(line) == "🔴"
 }
 
 // isEmptyLinkLine reports whether one line is an anchor with no destination.
